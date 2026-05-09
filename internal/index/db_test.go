@@ -2,10 +2,14 @@ package index
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/hidetzu/backlog-fzf/internal/backlog"
 )
@@ -427,21 +431,153 @@ func TestGetDocument_FoundAndNotFound(t *testing.T) {
 	}
 }
 
-func TestBuildFTSQuery(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"foo", `"foo"`},
-		{"foo bar", `"foo" "bar"`},
-		{"   foo   bar   ", `"foo" "bar"`},
-		{`with "quote"`, `"with" """quote"""`},
-		{"", ""},
-		{"   ", ""},
+// 2-char Japanese queries (the v0.1.1 acceptance criterion).
+func TestSearchIssues_TwoCharJapaneseMatches(t *testing.T) {
+	db := newMemDB(t)
+	ctx := context.Background()
+
+	if err := db.UpsertIssues(ctx, []backlog.Issue{
+		issueWith(1, "P-1", "P", "認証バグ修正", "Open", "alice"),
+		issueWith(2, "P-2", "P", "デプロイ手順", "Open", "bob"),
+	}); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		got := buildFTSQuery(tc.in)
-		if got != tc.want {
-			t.Errorf("buildFTSQuery(%q) = %q, want %q", tc.in, got, tc.want)
+
+	got, err := db.SearchIssues(ctx, "認証", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Key != "P-1" {
+		keys := make([]string, len(got))
+		for i, g := range got {
+			keys[i] = g.Key
 		}
+		t.Errorf("2-char query \"認証\" should match P-1 only; got %v", keys)
 	}
 }
+
+// 3+ char queries continue to work after the trigram → bigram switch.
+func TestSearchIssues_ThreeCharJapaneseStillMatches(t *testing.T) {
+	db := newMemDB(t)
+	ctx := context.Background()
+
+	if err := db.UpsertIssues(ctx, []backlog.Issue{
+		issueWith(1, "P-1", "P", "認証バグ修正", "Open", ""),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := db.SearchIssues(ctx, "認証バ", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("3-char query \"認証バ\" should still match P-1; got %d", len(got))
+	}
+}
+
+// 1-char queries cannot bigram → no rows (spec decision).
+func TestSearchIssues_SingleCharReturnsNoRows(t *testing.T) {
+	db := newMemDB(t)
+	ctx := context.Background()
+
+	if err := db.UpsertIssues(ctx, []backlog.Issue{
+		issueWith(1, "P-1", "P", "認証バグ修正", "Open", ""),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := db.SearchIssues(ctx, "認", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("1-char query should match nothing; got %d", len(got))
+	}
+}
+
+// LIKE post-filter rejects bigram MATCH false positives where every
+// bigram is present but not contiguously. Query "abcd" bigrams are
+// "ab","bc","cd"; "abxbcxcd" contains all three but not "abcd".
+func TestSearchIssues_LikePostFilterRejectsNonContiguous(t *testing.T) {
+	db := newMemDB(t)
+	ctx := context.Background()
+
+	if err := db.UpsertIssues(ctx, []backlog.Issue{
+		issueWith(1, "P-1", "P", "abxbcxcd noise", "Open", ""),
+		issueWith(2, "P-2", "P", "abcd direct", "Open", ""),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := db.SearchIssues(ctx, "abcd", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Key != "P-2" {
+		keys := make([]string, len(got))
+		for i, g := range got {
+			keys[i] = g.Key
+		}
+		t.Errorf("LIKE post-filter should drop non-contiguous match; got %v", keys)
+	}
+}
+
+// ASCII queries match across project_key / issue_key (covers BG of LIKE
+// post-filter spanning multiple fields).
+func TestSearchIssues_ASCIIQueryMatchesAcrossFields(t *testing.T) {
+	db := newMemDB(t)
+	ctx := context.Background()
+
+	if err := db.UpsertIssues(ctx, []backlog.Issue{
+		issueWith(1, "ALPHA-1", "ALPHA", "summary one", "Open", "alice"),
+		issueWith(2, "BETA-2", "BETA", "summary two", "Open", "bob"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		query    string
+		wantKey  string
+		wantHits int
+	}{
+		{"alice", "ALPHA-1", 1},
+		{"BETA", "BETA-2", 1},
+		{"ALPHA-1", "ALPHA-1", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			got, err := db.SearchIssues(ctx, tc.query, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != tc.wantHits || (tc.wantHits > 0 && got[0].Key != tc.wantKey) {
+				t.Errorf("query %q: wanted key=%q (n=%d), got %v", tc.query, tc.wantKey, tc.wantHits, got)
+			}
+		})
+	}
+}
+
+// Open() rejects an existing v0.1.0 (trigram FTS) DB with ErrLegacySchema.
+func TestOpen_DetectsLegacyTrigramSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE issues (id INTEGER PRIMARY KEY, summary TEXT NOT NULL);
+		CREATE VIRTUAL TABLE issues_fts USING fts5(summary, content='issues', tokenize='trigram');
+	`)
+	if err != nil {
+		t.Fatalf("seed legacy DB: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(path); !errors.Is(err, ErrLegacySchema) {
+		t.Errorf("expected ErrLegacySchema, got %v", err)
+	}
+}
+

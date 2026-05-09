@@ -98,7 +98,7 @@ The API key is not stored in the config; it is read from the `BACKLOG_API_KEY` e
 
 ## Known limitations
 
-- Queries shorter than 3 characters never match (trigram tokenizer constraint)
+- Single-character queries never match (the full-text index is built on 2-character grams)
 - Comments search is not supported yet (planned)
 - Multiple spaces are not supported
 - Attachment bodies (PDF / OCR) are not searchable
