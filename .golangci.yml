@@ -1,0 +1,26 @@
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    errcheck:
+      exclude-functions:
+        # SQL cleanup
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (*database/sql.Tx).Rollback
+        # Local index DB wrapper
+        - (*github.com/hidetzu/backlog-fzf/internal/index.DB).Close
+        # io.Closer (covers HTTP response bodies, etc.)
+        - (io.Closer).Close
+        # Stdout/stderr writes — error path is not actionable for CLI output
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Fprintf
+  exclusions:
+    rules:
+      # httptest handlers commonly ignore Write errors
+      - path: _test\.go
+        linters:
+          - errcheck
