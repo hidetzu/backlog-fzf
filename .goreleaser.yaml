@@ -2,10 +2,6 @@ version: 2
 
 project_name: backlog-fzf
 
-before:
-  hooks:
-    - go mod tidy
-
 builds:
   - id: bkfz
     main: ./cmd/bkfz

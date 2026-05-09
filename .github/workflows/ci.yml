@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
 
 # Cancel an in-progress run when a newer push or PR update arrives
 # (saves CI time when multiple PRs are running concurrently).
@@ -32,6 +32,15 @@ jobs:
           if [ -n "$out" ]; then
             echo "gofmt found unformatted files:"
             echo "$out"
+            exit 1
+          fi
+
+      - name: Verify go mod tidy
+        run: |
+          go mod tidy
+          if ! git diff --quiet go.mod go.sum; then
+            echo "go.mod / go.sum are not tidy. Run 'go mod tidy' locally and commit the result."
+            git diff go.mod go.sum
             exit 1
           fi
 
