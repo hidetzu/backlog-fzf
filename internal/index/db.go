@@ -24,8 +24,17 @@ type DB struct {
 	sql *sql.DB
 }
 
+// ErrLegacySchema is returned by Open when an existing DB was created by
+// v0.1.0 (trigram FTS). Callers should surface a "delete the index DB
+// and re-sync" instruction; the file path is in err.Error().
+var ErrLegacySchema = errors.New("index: legacy v0.1.0 schema (trigram FTS) detected; delete the index DB and run `bkfz sync` to rebuild")
+
 // Open opens the SQLite file at path, applying the schema if needed.
 // Passing ":memory:" creates an in-memory DB (for tests).
+//
+// Returns ErrLegacySchema (wrapped) if an existing DB still uses the
+// v0.1.0 trigram FTS schema; we don't auto-migrate at this stage and
+// instead ask the user to delete the file and re-run `bkfz sync`.
 //
 // `:memory:` caveat: database/sql's connection pool creates a separate
 // in-memory DB per connection, so with multiple connections, tables and
@@ -41,11 +50,38 @@ func Open(path string) (*DB, error) {
 	if path == ":memory:" {
 		conn.SetMaxOpenConns(1)
 	}
+	if err := detectLegacySchema(context.Background(), conn, path); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	if _, err := conn.ExecContext(context.Background(), schemaSQL); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("index: apply schema: %w", err)
 	}
 	return &DB{sql: conn}, nil
+}
+
+// detectLegacySchema returns a wrapped ErrLegacySchema if issues_fts
+// exists with the v0.1.0 trigram tokenizer. Fresh DBs (no issues_fts
+// table) and DBs already on the v0.1.1 schema return nil.
+func detectLegacySchema(ctx context.Context, conn *sql.DB, path string) error {
+	var sqlDef sql.NullString
+	err := conn.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='issues_fts'`,
+	).Scan(&sqlDef)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("index: detect schema at %s: %w", path, err)
+	}
+	if !sqlDef.Valid {
+		return nil
+	}
+	if strings.Contains(sqlDef.String, "tokenize='trigram'") || strings.Contains(sqlDef.String, `tokenize="trigram"`) {
+		return fmt.Errorf("%w (path: %s)", ErrLegacySchema, path)
+	}
+	return nil
 }
 
 // Close closes the DB handle.
@@ -210,8 +246,10 @@ LIMIT 1
 	return &docs[0], nil
 }
 
-// SearchDocuments returns documents matching the FTS5 query.
-// For an empty query, returns the most recent `limit` rows ordered by updated_at DESC.
+// SearchDocuments returns documents matching the bigram FTS5 query plus a
+// LIKE post-filter. For an empty query, returns the most recent `limit`
+// rows ordered by updated_at DESC. Returns nil for queries whose every
+// word is shorter than 2 runes (bigram cannot match 1-rune queries).
 func (db *DB) SearchDocuments(ctx context.Context, query string, limit int) ([]backlog.Document, error) {
 	if limit <= 0 {
 		limit = defaultSearchLimit
@@ -219,14 +257,26 @@ func (db *DB) SearchDocuments(ctx context.Context, query string, limit int) ([]b
 	if strings.TrimSpace(query) == "" {
 		return db.searchRecentDocuments(ctx, limit)
 	}
-	rows, err := db.sql.QueryContext(ctx, `
+	ftsExpr, needles, ok := bigramQuery(query)
+	if !ok {
+		return nil, nil
+	}
+
+	likeWhere, likeArgs := buildLikeWhere(
+		[]string{"d.title", "d.body", "d.project_key"}, needles,
+	)
+	args := append([]any{ftsExpr}, likeArgs...)
+	args = append(args, limit)
+
+	q := `
 SELECT d.backlog_id, d.project_key, d.title, d.body, d.status_id, d.created_at, d.updated_at
 FROM documents_fts
 JOIN documents d ON d.id = documents_fts.rowid
-WHERE documents_fts MATCH ?
+WHERE documents_fts MATCH ?` + likeWhere + `
 ORDER BY rank
 LIMIT ?
-`, buildFTSQuery(query), limit)
+`
+	rows, err := db.sql.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -275,9 +325,11 @@ func scanDocuments(rows *sql.Rows) ([]backlog.Document, error) {
 	return out, rows.Err()
 }
 
-// SearchIssues returns issues matching the FTS5 query.
-// For an empty query, returns the most recent `limit` rows ordered by
-// updated_at DESC (used right after TUI start-up).
+// SearchIssues returns issues matching the bigram FTS5 query plus a LIKE
+// post-filter. For an empty query, returns the most recent `limit` rows
+// ordered by updated_at DESC (used right after TUI start-up). Returns
+// nil for queries whose every word is shorter than 2 runes (bigram
+// cannot match 1-rune queries).
 func (db *DB) SearchIssues(ctx context.Context, query string, limit int) ([]backlog.Issue, error) {
 	if limit <= 0 {
 		limit = defaultSearchLimit
@@ -285,7 +337,11 @@ func (db *DB) SearchIssues(ctx context.Context, query string, limit int) ([]back
 	if strings.TrimSpace(query) == "" {
 		return db.searchRecent(ctx, limit)
 	}
-	return db.searchFTS(ctx, query, limit)
+	ftsExpr, needles, ok := bigramQuery(query)
+	if !ok {
+		return nil, nil
+	}
+	return db.searchFTS(ctx, ftsExpr, needles, limit)
 }
 
 func (db *DB) searchRecent(ctx context.Context, limit int) ([]backlog.Issue, error) {
@@ -302,15 +358,23 @@ LIMIT ?
 	return scanIssues(rows)
 }
 
-func (db *DB) searchFTS(ctx context.Context, query string, limit int) ([]backlog.Issue, error) {
-	rows, err := db.sql.QueryContext(ctx, `
+func (db *DB) searchFTS(ctx context.Context, ftsExpr string, needles []string, limit int) ([]backlog.Issue, error) {
+	likeWhere, likeArgs := buildLikeWhere(
+		[]string{"i.summary", "i.description", "i.status", "i.assignee", "i.project_key", "i.issue_key"},
+		needles,
+	)
+	args := append([]any{ftsExpr}, likeArgs...)
+	args = append(args, limit)
+
+	q := `
 SELECT i.id, i.issue_key, i.project_key, i.summary, i.description, i.status, i.assignee, i.due_date, i.created_at, i.updated_at
 FROM issues_fts
 JOIN issues i ON i.id = issues_fts.rowid
-WHERE issues_fts MATCH ?
+WHERE issues_fts MATCH ?` + likeWhere + `
 ORDER BY rank
 LIMIT ?
-`, buildFTSQuery(query), limit)
+`
+	rows, err := db.sql.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -318,17 +382,34 @@ LIMIT ?
 	return scanIssues(rows)
 }
 
-// buildFTSQuery converts user input into FTS5 MATCH syntax.
-// Whitespace-split tokens are each wrapped in double quotes and joined
-// with AND (FTS5's default connector).
-// Example: `auth fix` → `"auth" "fix"`. Embedded `"` is escaped as `""`.
-func buildFTSQuery(s string) string {
-	tokens := strings.Fields(s)
-	for i, t := range tokens {
-		t = strings.ReplaceAll(t, `"`, `""`)
-		tokens[i] = `"` + t + `"`
+// buildLikeWhere builds the AND-joined LIKE post-filter that verifies
+// substring contiguity after the bigram MATCH. Each needle must appear
+// as a substring in at least one of the supplied fields. Returns the
+// SQL fragment (with a leading " AND " when non-empty) and the values
+// to bind in order.
+//
+// LIKE wildcards in the user's input are escaped via ESCAPE '#'.
+func buildLikeWhere(fields []string, needles []string) (string, []any) {
+	if len(needles) == 0 {
+		return "", nil
 	}
-	return strings.Join(tokens, " ")
+	var clauses []string
+	var args []any
+	for _, n := range needles {
+		var perField []string
+		wild := "%" + likeEscape(n) + "%"
+		for _, f := range fields {
+			perField = append(perField, f+" LIKE ? ESCAPE '#'")
+			args = append(args, wild)
+		}
+		clauses = append(clauses, "("+strings.Join(perField, " OR ")+")")
+	}
+	return " AND " + strings.Join(clauses, " AND "), args
+}
+
+// likeEscape escapes LIKE wildcards (% _ #) using # as the escape char.
+func likeEscape(s string) string {
+	return strings.NewReplacer(`#`, `##`, `%`, `#%`, `_`, `#_`).Replace(s)
 }
 
 func scanIssues(rows *sql.Rows) ([]backlog.Issue, error) {
