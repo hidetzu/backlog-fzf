@@ -103,9 +103,8 @@ func TestUpsertIssues_InsertThenUpdateSameID(t *testing.T) {
 	}
 }
 
-// The trigram tokenizer only matches queries of 3+ characters, so the
-// test queries below are all 3+ chars (this constraint is mentioned in
-// the README's known-limitations section).
+// Bigram FTS matches 2+ rune queries; the queries below stay 3+ runes
+// to keep the assertions sharp regardless of bigram-AND collisions.
 func TestUpsertIssues_FTSStaysInSyncOnUpdate(t *testing.T) {
 	db := newMemDB(t)
 	ctx := context.Background()
@@ -580,4 +579,3 @@ func TestOpen_DetectsLegacyTrigramSchema(t *testing.T) {
 		t.Errorf("expected ErrLegacySchema, got %v", err)
 	}
 }
-
