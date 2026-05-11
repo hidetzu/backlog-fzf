@@ -157,11 +157,16 @@ Without fzf, you can still search non-interactively:
   bkfz <query>`)
 }
 
-// shellQuote wraps a string in single quotes for safe inclusion in a
-// shell command. Embedded single quotes are escaped using the standard
-// close-quote / backslash-quote / reopen-quote pattern (required because
-// fzf's bind expressions are evaluated through sh -c).
+// shellQuote wraps a string for safe inclusion in fzf --bind command
+// expressions. fzf evaluates these through the OS shell (sh on Unix,
+// cmd.exe on Windows by default), so the quoting style is OS-dependent.
+//
+//	sh:      '...'  with embedded ' as '\''
+//	cmd.exe: "..."  with embedded " as ""
 func shellQuote(s string) string {
+	if runtime.GOOS == "windows" {
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
