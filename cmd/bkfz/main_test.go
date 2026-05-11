@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -202,17 +203,26 @@ func TestParseTypeKeyArgs(t *testing.T) {
 }
 
 func TestShellQuote(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"foo", "'foo'"},
-		{"with space", "'with space'"},
-		{"/usr/local/bin/bkfz", "'/usr/local/bin/bkfz'"},
-		{"it's", `'it'\''s'`},
+	type tc struct{ in, want string }
+	var cases []tc
+	if runtime.GOOS == "windows" {
+		cases = []tc{
+			{"foo", `"foo"`},
+			{"with space", `"with space"`},
+			{`C:\Users\me\go\bin\bkfz.exe`, `"C:\Users\me\go\bin\bkfz.exe"`},
+			{`a"b`, `"a""b"`},
+		}
+	} else {
+		cases = []tc{
+			{"foo", "'foo'"},
+			{"with space", "'with space'"},
+			{"/usr/local/bin/bkfz", "'/usr/local/bin/bkfz'"},
+			{"it's", `'it'\''s'`},
+		}
 	}
-	for _, tc := range cases {
-		if got := shellQuote(tc.in); got != tc.want {
-			t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
+	for _, c := range cases {
+		if got := shellQuote(c.in); got != c.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
