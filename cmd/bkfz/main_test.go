@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -536,6 +537,31 @@ func TestConfirmYesNo(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveVersion(t *testing.T) {
+	withModule := func(v string) *debug.BuildInfo {
+		return &debug.BuildInfo{Main: debug.Module{Version: v}}
+	}
+	tests := []struct {
+		name    string
+		ldflags string
+		info    *debug.BuildInfo
+		want    string
+	}{
+		{"ldflags wins", "0.2.0", withModule("v0.1.2"), "0.2.0"},
+		{"ldflags with v prefix", "v0.2.0", nil, "0.2.0"},
+		{"go install module version", "", withModule("v0.2.0"), "0.2.0"},
+		{"local build devel", "", withModule("(devel)"), "dev"},
+		{"no build info", "", nil, "dev"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveVersion(tt.ldflags, tt.info); got != tt.want {
+				t.Errorf("resolveVersion(%q, %+v) = %q, want %q", tt.ldflags, tt.info, got, tt.want)
 			}
 		})
 	}
