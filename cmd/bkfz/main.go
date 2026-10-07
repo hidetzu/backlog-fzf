@@ -26,9 +26,10 @@ import (
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
-// When unset (e.g. `go install ...@vX.Y.Z`), resolveVersion falls back
-// to the module version recorded in the build info.
-var version = ""
+// When unset, resolveVersion falls back to the module version recorded
+// in the build info (`go install ...@vX.Y.Z`, or a VCS-derived
+// pseudo-version for `go build` inside a git checkout).
+var version string
 
 // Kind labels: shared identifier used as the first column of list output
 // and as the type argument for preview / open commands.
@@ -151,8 +152,8 @@ func readBuildInfo() *debug.BuildInfo {
 }
 
 // resolveVersion returns the ldflags-injected version if present,
-// otherwise the module version from build info (set by `go install
-// module@version`), otherwise "dev" (local `go build` / `go run`).
+// otherwise the module version from build info, otherwise "dev"
+// (e.g. `go run`, or builds outside a git checkout report "(devel)").
 // The leading "v" is stripped so both sources print the same shape.
 func resolveVersion(ldflagsVersion string, info *debug.BuildInfo) string {
 	v := ldflagsVersion

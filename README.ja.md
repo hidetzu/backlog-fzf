@@ -27,13 +27,13 @@ pure-Go の単一バイナリで動作し、TUI は外部 `fzf` を起動して�
 
 ## インストール
 
-### Homebrew（macOS / Linux、v0.2.0 以降）
+### Homebrew（macOS、v0.2.0 以降）
 
 ```bash
 brew install hidetzu/tap/bkfz
 ```
 
-`fzf` も一緒にインストールされます。
+`fzf` も一緒にインストールされます。Linux では下記のビルド済みバイナリを使ってください。
 
 ### ビルド済みバイナリ
 
@@ -53,7 +53,7 @@ sudo mv bkfz /usr/local/bin/
 go install github.com/hidetzu/backlog-fzf/cmd/bkfz@latest
 ```
 
-### ソースからビルド
+### ソースからビルド（Go 1.26+）
 
 ```bash
 git clone https://github.com/hidetzu/backlog-fzf.git

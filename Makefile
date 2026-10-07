@@ -2,7 +2,7 @@ BINARY  := bkfz
 PKG     := ./cmd/bkfz
 BIN_DIR := bin
 DEMO_DIR := tmp/demo
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -X main.version=$(VERSION)
 
 .PHONY: help build run test vet fmt lint tidy clean demo

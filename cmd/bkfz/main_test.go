@@ -561,7 +561,7 @@ func TestResolveVersion(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := resolveVersion(tt.ldflags, tt.info); got != tt.want {
-				t.Errorf("resolveVersion(%q) = %q, want %q", tt.ldflags, got, tt.want)
+				t.Errorf("resolveVersion(%q, %+v) = %q, want %q", tt.ldflags, tt.info, got, tt.want)
 			}
 		})
 	}

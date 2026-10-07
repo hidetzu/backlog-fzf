@@ -57,6 +57,8 @@ homebrew_casks:
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # Don't point brew users at release candidates.
+    skip_upload: auto
     homepage: "https://github.com/hidetzu/backlog-fzf"
     description: "Cross-project fuzzy search CLI for Nulab Backlog"
     dependencies:

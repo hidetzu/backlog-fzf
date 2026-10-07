@@ -27,13 +27,13 @@ The binary is pure-Go and self-contained; the TUI launches an external `fzf` pro
 
 ## Install
 
-### Homebrew (macOS / Linux, v0.2.0+)
+### Homebrew (macOS, v0.2.0+)
 
 ```bash
 brew install hidetzu/tap/bkfz
 ```
 
-This also installs `fzf`.
+This also installs `fzf`. On Linux, use the prebuilt binaries below.
 
 ### Prebuilt binaries
 
@@ -53,7 +53,7 @@ Archives: `macOS_arm64`, `macOS_x86_64`, `Linux_arm64`, `Linux_x86_64` (`.tar.gz
 go install github.com/hidetzu/backlog-fzf/cmd/bkfz@latest
 ```
 
-### From source
+### From source (Go 1.26+)
 
 ```bash
 git clone https://github.com/hidetzu/backlog-fzf.git
