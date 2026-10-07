@@ -18,7 +18,7 @@ Set Theme "Catppuccin Mocha"
 Hide
 # Exit the shell (recording nothing) unless BKFZ_DEMO_DIR is set, so a
 # misconfigured run can never fall back to the real ~/.config/bkfz.
-Type `[ -n "${BKFZ_DEMO_DIR:-}" ] || exit 1; export PS1='$ ' XDG_CONFIG_HOME="$BKFZ_DEMO_DIR/config" XDG_DATA_HOME="$BKFZ_DEMO_DIR/data" FZF_DEFAULT_OPTS='--tabstop=2' && clear`
+Type `[ -n "${BKFZ_DEMO_DIR:-}" ] || exit 1; export PS1='$ ' XDG_CONFIG_HOME="$BKFZ_DEMO_DIR/config" XDG_DATA_HOME="$BKFZ_DEMO_DIR/data" FZF_DEFAULT_OPTS= && clear`
 Enter
 Show
 

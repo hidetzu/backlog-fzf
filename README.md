@@ -17,13 +17,13 @@ The binary is pure-Go and self-contained; the TUI launches an external `fzf` pro
 
 - Fuzzy search across both issues and documents
 - Incremental filtering and preview via `fzf`
-- Open the selected entry directly in a browser
+- Open the selected entry in a browser, or copy its URL, without leaving the TUI
 - Sync progress (count and ETA) shown live
 
 ## Requirements
 
 - A Backlog API key (`BACKLOG_API_KEY`)
-- [fzf](https://github.com/junegunn/fzf) for the TUI (installed automatically with Homebrew)
+- [fzf](https://github.com/junegunn/fzf) 0.40+ for the TUI (installed automatically with Homebrew)
 
 ## Install
 
@@ -91,9 +91,26 @@ bkfz sync -p PROJ             Limit sync to one project key
 bkfz open <KEY>               Open an issue in the browser
 bkfz open doc <DOC_ID>        Open a document
 bkfz preview <type> <KEY>     Preview output
+bkfz url <type> <KEY>         Print the URL (type = issue | doc)
+bkfz url --copy <type> <KEY>  Copy the URL to the clipboard
 bkfz --list <query>           List output for fzf reload
 bkfz version                  Print version
 ```
+
+## Keybindings (TUI)
+
+| Key | Action |
+|---|---|
+| `Enter` | Open in the browser and exit |
+| `Ctrl-Y` | Copy the URL to the clipboard (stay in the TUI) |
+| `Ctrl-O` | Open in the browser (stay in the TUI) |
+| `Ctrl-/` | Toggle the preview |
+| `Shift-↑` / `Shift-↓` | Scroll the preview |
+| `Esc` / `Ctrl-C` | Quit |
+
+Results come from bkfz's index as-is (fzf's own filtering is disabled), so hits in descriptions and document bodies are listed too.
+
+Clipboard: `pbcopy` (macOS), `clip` (Windows), `wl-copy` / `xclip` / `xsel` (Linux).
 
 ## Configuration
 
@@ -133,7 +150,6 @@ The API key is not stored in the config; it is read from the `BACKLOG_API_KEY` e
 ## Roadmap
 
 - Comments search
-- TUI keybinding extensions (e.g. `Ctrl-Y` to copy URL)
 - Multi-space support
 - Attachment body search (PDF / OCR)
 - Sync as a daemon
