@@ -33,6 +33,7 @@ go.work.sum
 
 # Build output
 /bin/
+/dist/
 
 # Local test/debug artifacts
 /tmp/

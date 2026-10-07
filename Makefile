@@ -2,6 +2,8 @@ BINARY  := bkfz
 PKG     := ./cmd/bkfz
 BIN_DIR := bin
 DEMO_DIR := tmp/demo
+VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS  := -X main.version=$(VERSION)
 
 .PHONY: help build run test vet fmt lint tidy clean demo
 
@@ -9,7 +11,7 @@ help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?##/ {printf "  %-8s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 build: ## Build the binary into $(BIN_DIR)/$(BINARY)
-	go build -o $(BIN_DIR)/$(BINARY) $(PKG)
+	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) $(PKG)
 
 run: ## Run via go run; pass args with ARGS="..."
 	go run $(PKG) $(ARGS)

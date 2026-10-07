@@ -11,7 +11,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X main.version={{ .Version }}
     goos:
       - linux
       - darwin
@@ -45,6 +45,30 @@ archives:
       - README.md
       - README.ja.md
       - LICENSE
+
+homebrew_casks:
+  - name: bkfz
+    ids:
+      - default
+    binaries:
+      - bkfz
+    repository:
+      owner: hidetzu
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/hidetzu/backlog-fzf"
+    description: "Cross-project fuzzy search CLI for Nulab Backlog"
+    dependencies:
+      - formula: fzf
+    # The binary is not signed/notarized; drop the quarantine attribute
+    # so Gatekeeper doesn't block the first launch.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/bkfz"]
+          end
 
 checksum:
   name_template: checksums.txt

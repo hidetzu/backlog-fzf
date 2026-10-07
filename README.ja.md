@@ -22,23 +22,46 @@ pure-Go の単一バイナリで動作し、TUI は外部 `fzf` を起動して�
 
 ## 必要なもの
 
-- [fzf](https://github.com/junegunn/fzf)（TUI 利用時）
 - Backlog API キー（`BACKLOG_API_KEY`）
-- Go 1.26+（ソースからビルドする場合）
+- [fzf](https://github.com/junegunn/fzf)（TUI 利用時。Homebrew なら自動でインストールされます）
 
 ## インストール
+
+### Homebrew（macOS / Linux、v0.2.0 以降）
+
+```bash
+brew install hidetzu/tap/bkfz
+```
+
+`fzf` も一緒にインストールされます。
+
+### ビルド済みバイナリ
+
+[Releases](https://github.com/hidetzu/backlog-fzf/releases/latest) から OS に合ったアーカイブをダウンロードし、`bkfz` を `PATH` の通った場所に置いてください。Linux x86_64 の例:
+
+```bash
+VERSION=0.2.0  # 最新バージョンは Releases ページで確認してください
+curl -fsSL "https://github.com/hidetzu/backlog-fzf/releases/download/v${VERSION}/backlog-fzf_${VERSION}_Linux_x86_64.tar.gz" | tar xz bkfz
+sudo mv bkfz /usr/local/bin/
+```
+
+アーカイブは `macOS_arm64`、`macOS_x86_64`、`Linux_arm64`、`Linux_x86_64`（`.tar.gz`）と `Windows_x86_64`（`.zip`）です。fzf は別途インストールしてください（Windows なら `winget install junegunn.fzf`）。
+
+### go install（Go 1.26+）
 
 ```bash
 go install github.com/hidetzu/backlog-fzf/cmd/bkfz@latest
 ```
 
-または次の手順でもビルドできます:
+### ソースからビルド
 
 ```bash
 git clone https://github.com/hidetzu/backlog-fzf.git
 cd backlog-fzf
-make build
+make build   # → bin/bkfz
 ```
+
+インストール後は `bkfz version` で確認できます。
 
 ## クイックスタート
 
@@ -69,6 +92,7 @@ bkfz open <KEY>               課題を開く
 bkfz open doc <DOC_ID>        ドキュメントを開く
 bkfz preview <type> <KEY>     preview 出力
 bkfz --list <query>           fzf reload 用出力
+bkfz version                  バージョン表示
 ```
 
 ## 設定

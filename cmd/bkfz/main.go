@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"syscall"
@@ -23,6 +24,11 @@ import (
 	"github.com/hidetzu/backlog-fzf/internal/syncer"
 	"github.com/hidetzu/backlog-fzf/internal/tui"
 )
+
+// version is set at build time via -ldflags "-X main.version=...".
+// When unset (e.g. `go install ...@vX.Y.Z`), resolveVersion falls back
+// to the module version recorded in the build info.
+var version = ""
 
 // Kind labels: shared identifier used as the first column of list output
 // and as the type argument for preview / open commands.
@@ -43,6 +49,7 @@ Usage:
   bkfz preview <KEY>         Print preview text for an issue
   bkfz preview <type> <KEY>  Print preview text (used by fzf --preview)
   bkfz --list <query>        Emit list lines for fzf change:reload
+  bkfz version               Print version
 
 Sync flags:
   --refetch                  Re-fetch everything, ignoring watermarks (stale local records remain)
@@ -76,6 +83,9 @@ func run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
+		return nil
+	case "version", "--version", "-v":
+		fmt.Println("bkfz", resolveVersion(version, readBuildInfo()))
 		return nil
 	case "init":
 		return runInit(ctx, args[1:])
@@ -129,6 +139,30 @@ func runTUI(ctx context.Context) error {
 		return fmt.Errorf("could not parse type/key from selected line: %q", selected)
 	}
 	return openRefURL(ctx, cfg.SpaceDomain, kind, key)
+}
+
+// readBuildInfo wraps debug.ReadBuildInfo, returning nil when unavailable.
+func readBuildInfo() *debug.BuildInfo {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return nil
+	}
+	return info
+}
+
+// resolveVersion returns the ldflags-injected version if present,
+// otherwise the module version from build info (set by `go install
+// module@version`), otherwise "dev" (local `go build` / `go run`).
+// The leading "v" is stripped so both sources print the same shape.
+func resolveVersion(ldflagsVersion string, info *debug.BuildInfo) string {
+	v := ldflagsVersion
+	if v == "" && info != nil && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		v = info.Main.Version
+	}
+	if v == "" {
+		return "dev"
+	}
+	return strings.TrimPrefix(v, "v")
 }
 
 // parseSelectedRef extracts (kind, key, ok) from a formatIssueLine /

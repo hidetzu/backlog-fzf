@@ -22,23 +22,46 @@ The binary is pure-Go and self-contained; the TUI launches an external `fzf` pro
 
 ## Requirements
 
-- [fzf](https://github.com/junegunn/fzf) (when using the TUI)
 - A Backlog API key (`BACKLOG_API_KEY`)
-- Go 1.26+ (when building from source)
+- [fzf](https://github.com/junegunn/fzf) for the TUI (installed automatically with Homebrew)
 
 ## Install
+
+### Homebrew (macOS / Linux, v0.2.0+)
+
+```bash
+brew install hidetzu/tap/bkfz
+```
+
+This also installs `fzf`.
+
+### Prebuilt binaries
+
+Download the archive for your OS from [Releases](https://github.com/hidetzu/backlog-fzf/releases/latest) and put `bkfz` on your `PATH`. For example, on Linux x86_64:
+
+```bash
+VERSION=0.2.0  # see the Releases page for the latest version
+curl -fsSL "https://github.com/hidetzu/backlog-fzf/releases/download/v${VERSION}/backlog-fzf_${VERSION}_Linux_x86_64.tar.gz" | tar xz bkfz
+sudo mv bkfz /usr/local/bin/
+```
+
+Archives: `macOS_arm64`, `macOS_x86_64`, `Linux_arm64`, `Linux_x86_64` (`.tar.gz`) and `Windows_x86_64` (`.zip`). Install fzf separately (`winget install junegunn.fzf` on Windows).
+
+### go install (Go 1.26+)
 
 ```bash
 go install github.com/hidetzu/backlog-fzf/cmd/bkfz@latest
 ```
 
-Or build from source:
+### From source
 
 ```bash
 git clone https://github.com/hidetzu/backlog-fzf.git
 cd backlog-fzf
-make build
+make build   # → bin/bkfz
 ```
+
+Check the installation with `bkfz version`.
 
 ## Quick start
 
@@ -69,6 +92,7 @@ bkfz open <KEY>               Open an issue in the browser
 bkfz open doc <DOC_ID>        Open a document
 bkfz preview <type> <KEY>     Preview output
 bkfz --list <query>           List output for fzf reload
+bkfz version                  Print version
 ```
 
 ## Configuration
