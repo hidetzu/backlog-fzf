@@ -5,6 +5,8 @@
 
 [English](./README.md)
 
+![bkfz のデモ: 2 文字の日本語クエリで課題とドキュメントがその場で絞り込まれ、右側にプレビューが表示される](docs/demo.gif)
+
 Nulab Backlog の課題・ドキュメントを `fzf` で横断検索できる CLI です（バイナリ名: `bkfz`）。
 
 Backlog API のデータをローカルに同期し、複数プロジェクトをまたいですばやく検索できます。
@@ -116,6 +118,7 @@ API キーは設定ファイルに保存せず、`BACKLOG_API_KEY` 環境変数�
 
 - 同期は手動 `bkfz sync` が前提
 - 検索処理はローカルで完結（オフライン利用可）
+- 上のデモは架空のデータです。`make demo` で再生成できます（[VHS](https://github.com/charmbracelet/vhs) が必要）
 
 ## ライセンス
 

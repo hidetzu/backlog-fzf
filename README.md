@@ -5,6 +5,8 @@
 
 [日本語](./README.ja.md)
 
+![bkfz demo: a 2-character Japanese query filters issues and documents live, with a preview pane](docs/demo.gif)
+
 A CLI for cross-project fuzzy search across Nulab Backlog issues and documents (binary name: `bkfz`).
 
 It mirrors Backlog API data into a local store so you can search across multiple projects quickly.
@@ -116,6 +118,7 @@ The API key is not stored in the config; it is read from the `BACKLOG_API_KEY` e
 
 - Syncing is manual: run `bkfz sync` to update
 - Search runs entirely locally (works offline)
+- The demo above uses fictional data; regenerate it with `make demo` (requires [VHS](https://github.com/charmbracelet/vhs))
 
 ## License
 
