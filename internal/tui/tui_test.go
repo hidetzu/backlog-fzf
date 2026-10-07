@@ -26,9 +26,11 @@ func TestBuildFzfArgs_FullOptions(t *testing.T) {
 	}
 }
 
-func TestBuildFzfArgs_EmptyOptionsProducesNoArgs(t *testing.T) {
-	if args := buildFzfArgs(RunOptions{}); len(args) != 0 {
-		t.Errorf("empty options should produce no args, got: %v", args)
+func TestBuildFzfArgs_EmptyOptionsOnlySetsLayout(t *testing.T) {
+	args := buildFzfArgs(RunOptions{})
+	want := []string{"--delimiter", "\t", "--tabstop", "2"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("empty options: got %q, want %q", args, want)
 	}
 }
 
@@ -46,5 +48,110 @@ func TestBuildFzfArgs_OmitsFieldsThatAreEmpty(t *testing.T) {
 	joined := strings.Join(args, "\x00")
 	if !strings.Contains(joined, "start:reload(bkfz --list {q})") {
 		t.Errorf("expected reload bind in args, got: %v", args)
+	}
+}
+
+func TestBuildFzfArgs_ReloadDisablesFzfFiltering(t *testing.T) {
+	// bkfz matches descriptions / document bodies that are not part of
+	// the visible line, so fzf must not re-filter reloaded results.
+	args := buildFzfArgs(RunOptions{ReloadCmd: "bkfz --list {q}"})
+	if !contains(args, "--disabled") {
+		t.Errorf("expected --disabled when ReloadCmd is set, got: %v", args)
+	}
+	if contains(buildFzfArgs(RunOptions{}), "--disabled") {
+		t.Error("--disabled should not be set without ReloadCmd")
+	}
+}
+
+func TestBuildFzfArgs_KeyActions(t *testing.T) {
+	args := buildFzfArgs(RunOptions{
+		PreviewCmd: "bkfz preview {1} {2}",
+		ReloadCmd:  "bkfz --list {q}",
+		CopyCmd:    "bkfz --action copy {1} {2}",
+		OpenCmd:    "bkfz --action open {1} {2}",
+	})
+	joined := strings.Join(args, "\x00")
+	header := "ctrl-y: copy URL · ctrl-o: open (stay) · ctrl-/: preview"
+	for _, want := range []string{
+		"--bind\x00ctrl-y:transform-header(bkfz --action copy {1} {2})",
+		"--bind\x00ctrl-o:transform-header(bkfz --action open {1} {2})",
+		"--bind\x00ctrl-/:toggle-preview",
+		"--bind\x00shift-up:preview-up",
+		"--bind\x00shift-down:preview-down",
+		"--header\x00" + header,
+		// The status line from ctrl-y / ctrl-o is replaced by the key help
+		// again on the next query change.
+		"--bind\x00change:reload(bkfz --list {q})+change-header:" + header,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expected args to contain %q, got args=%q", want, args)
+		}
+	}
+}
+
+func TestHeaderText_ListsOnlyConfiguredKeys(t *testing.T) {
+	if got := headerText(RunOptions{ReloadCmd: "x"}); got != "" {
+		t.Errorf("no actions → empty header, got %q", got)
+	}
+	if got, want := headerText(RunOptions{CopyCmd: "x"}), "ctrl-y: copy URL"; got != want {
+		t.Errorf("headerText = %q, want %q", got, want)
+	}
+}
+
+func TestBuildFzfArgs_NoHeaderKeepsPlainChangeBind(t *testing.T) {
+	args := buildFzfArgs(RunOptions{ReloadCmd: "bkfz --list {q}"})
+	if !contains(args, "change:reload(bkfz --list {q})") {
+		t.Errorf("expected plain change bind, got: %q", args)
+	}
+	if contains(args, "--header") {
+		t.Errorf("no --header expected without actions, got: %q", args)
+	}
+}
+
+func contains(args []string, s string) bool {
+	for _, a := range args {
+		if a == s {
+			return true
+		}
+	}
+	return false
+}
+
+func TestParseFzfVersion(t *testing.T) {
+	tests := []struct {
+		out    string
+		want   string
+		wantOK bool
+	}{
+		{"0.72.0 (Homebrew)\n", "0.72.0", true},
+		{"0.44.1 (debian)\n", "0.44.1", true},
+		{"0.29.0\n", "0.29.0", true},
+		{"", "", false},
+		{"fzf devel\n", "", false},
+	}
+	for _, tt := range tests {
+		got, ok := parseFzfVersion(tt.out)
+		if got != tt.want || ok != tt.wantOK {
+			t.Errorf("parseFzfVersion(%q) = (%q, %v), want (%q, %v)", tt.out, got, ok, tt.want, tt.wantOK)
+		}
+	}
+}
+
+func TestVersionLess(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"0.29.0", MinFzfVersion, true},
+		{"0.39.9", "0.40.0", true},
+		{"0.40.0", "0.40.0", false},
+		{"0.72.0", "0.40.0", false},
+		{"1.0", "0.40.0", false},
+		{"garbage", "0.40.0", false},
+	}
+	for _, tt := range tests {
+		if got := versionLess(tt.a, tt.b); got != tt.want {
+			t.Errorf("versionLess(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
 	}
 }

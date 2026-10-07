@@ -49,7 +49,11 @@ Usage:
   bkfz open <type> <KEY>     Open issue|doc explicitly (type = issue | doc)
   bkfz preview <KEY>         Print preview text for an issue
   bkfz preview <type> <KEY>  Print preview text (used by fzf --preview)
+  bkfz url [--copy] <type> <KEY>
+                             Print (or copy to clipboard) the URL of an issue|doc
   bkfz --list <query>        Emit list lines for fzf change:reload
+  bkfz --action <copy|open> <type> <KEY>
+                             Run a TUI key action and print a status line (fzf transform-header)
   bkfz version               Print version
 
 Sync flags:
@@ -96,8 +100,12 @@ func run(ctx context.Context, args []string) error {
 		return runOpen(ctx, args[1:])
 	case "preview":
 		return runPreview(ctx, args[1:])
+	case "url":
+		return runURL(ctx, args[1:])
 	case "--list":
 		return runList(ctx, args[1:])
+	case "--action":
+		return runAction(ctx, args[1:])
 	default:
 		return runSearch(ctx, args) // `bkfz <query>`
 	}
@@ -119,15 +127,13 @@ func runTUI(ctx context.Context) error {
 	if err != nil {
 		exe = "bkfz" // on failure, fall back to "bkfz" resolved via PATH
 	}
-	q := shellQuote(exe)
-
-	selected, err := tui.Run(ctx, tui.RunOptions{
-		ReloadCmd:  fmt.Sprintf("%s --list {q}", q),
-		PreviewCmd: fmt.Sprintf("%s preview {1} {2}", q),
-	})
+	selected, err := tui.Run(ctx, tuiOptions(shellQuote(exe)))
 	if err != nil {
 		if errors.Is(err, tui.ErrFzfNotFound) {
 			return fzfMissingError()
+		}
+		if errors.Is(err, tui.ErrFzfTooOld) {
+			return fmt.Errorf("%w\n\nUpgrade fzf (https://github.com/junegunn/fzf#installation), or search non-interactively:\n  bkfz <query>", err)
 		}
 		return err
 	}
@@ -166,6 +172,17 @@ func resolveVersion(ldflagsVersion string, info *debug.BuildInfo) string {
 	return strings.TrimPrefix(v, "v")
 }
 
+// tuiOptions returns the fzf wiring for the TUI. q is the shell-quoted
+// path of this executable; every action calls back into bkfz.
+func tuiOptions(q string) tui.RunOptions {
+	return tui.RunOptions{
+		ReloadCmd:  q + " --list {q}",
+		PreviewCmd: q + " preview {1} {2}",
+		CopyCmd:    q + " --action copy {1} {2}",
+		OpenCmd:    q + " --action open {1} {2}",
+	}
+}
+
 // parseSelectedRef extracts (kind, key, ok) from a formatIssueLine /
 // formatDocumentLine output (type\tKEY\t...). Returns ok=false when
 // neither type nor key can be obtained.
@@ -182,14 +199,14 @@ func parseSelectedRef(line string) (kind, key string, ok bool) {
 func fzfMissingError() error {
 	return fmt.Errorf(`fzf not found in PATH.
 
-Install fzf:
+Install fzf (%s or newer):
   macOS:    brew install fzf
   Linux:    apt install fzf  (or your distribution's package manager)
   Windows:  winget install junegunn.fzf
   Other:    https://github.com/junegunn/fzf
 
 Without fzf, you can still search non-interactively:
-  bkfz <query>`)
+  bkfz <query>`, tui.MinFzfVersion)
 }
 
 // shellQuote wraps a string for safe inclusion in fzf --bind command
@@ -546,37 +563,200 @@ func parseTypeKeyArgs(args []string) (kind, key string) {
 	return kindIssue, args[0]
 }
 
-// openRefURL picks a URL pattern based on kind and opens it in the browser.
+// issueURL / documentURL are the single source of Backlog URL patterns.
 //
 //	issue: https://{space}/view/{KEY}
 //	doc:   https://{space}/document/{PROJECT_KEY}/{DOC_ID}
-//
+func issueURL(spaceDomain, key string) string {
+	return fmt.Sprintf("https://%s/view/%s", spaceDomain, key)
+}
+
+func documentURL(spaceDomain, projectKey, id string) string {
+	return fmt.Sprintf("https://%s/document/%s/%s", spaceDomain, projectKey, id)
+}
+
+// resolveRefURL returns the browser URL for (kind, key).
 // For docs, project_key is looked up in the index DB (it is intentionally
 // not embedded in the list line).
-func openRefURL(ctx context.Context, spaceDomain, kind, key string) error {
-	var url string
+func resolveRefURL(ctx context.Context, spaceDomain, kind, key string) (string, error) {
 	switch kind {
 	case kindIssue:
-		url = fmt.Sprintf("https://%s/view/%s", spaceDomain, key)
+		return issueURL(spaceDomain, key), nil
 	case kindDocument:
 		db, err := openIndexDB()
 		if err != nil {
-			return err
+			return "", err
 		}
 		defer db.Close()
 		doc, err := db.GetDocument(ctx, key)
 		if err != nil {
-			return fmt.Errorf("open doc %s: %w", key, err)
+			return "", fmt.Errorf("doc %s: %w", key, err)
 		}
-		url = fmt.Sprintf("https://%s/document/%s/%s", spaceDomain, doc.ProjectKey, doc.ID)
+		return documentURL(spaceDomain, doc.ProjectKey, doc.ID), nil
 	default:
-		return fmt.Errorf("unknown kind: %q", kind)
+		return "", fmt.Errorf("unknown kind: %q", kind)
+	}
+}
+
+// openRefURL resolves the URL for (kind, key) and opens it in the browser.
+//
+// The browser command is started but not waited for: ctrl-o runs this
+// inside fzf's synchronous transform-header, and some xdg-open setups run
+// the browser in the foreground, which would freeze the TUI until the
+// browser exits.
+func openRefURL(ctx context.Context, spaceDomain, kind, key string) error {
+	url, err := resolveRefURL(ctx, spaceDomain, kind, key)
+	if err != nil {
+		return err
 	}
 	name, args := browserCommand(runtime.GOOS, url)
 	if name == "" {
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
-	return exec.CommandContext(ctx, name, args...).Run()
+	cmd := exec.Command(name, args...) // not CommandContext: must outlive bkfz
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+// copyRefURL resolves the URL for (kind, key), copies it to the
+// clipboard, and returns it.
+func copyRefURL(ctx context.Context, spaceDomain, kind, key string) (string, error) {
+	url, err := resolveRefURL(ctx, spaceDomain, kind, key)
+	if err != nil {
+		return "", err
+	}
+	if err := copyToClipboard(ctx, url); err != nil {
+		return "", err
+	}
+	return url, nil
+}
+
+// runURL prints the URL for an issue or document, or copies it to the
+// clipboard with --copy.
+//
+//	bkfz url <KEY>                issue
+//	bkfz url <type> <KEY>         type = issue | doc
+//	bkfz url --copy <type> <KEY>
+func runURL(ctx context.Context, args []string) error {
+	copyURL := len(args) > 0 && args[0] == "--copy"
+	if copyURL {
+		args = args[1:]
+	}
+	if len(args) < 1 {
+		return errors.New("url: KEY required")
+	}
+	cfg, err := loadConfigOrInitHint()
+	if err != nil {
+		return err
+	}
+	kind, key := parseTypeKeyArgs(args)
+	if copyURL {
+		_, err := copyRefURL(ctx, cfg.SpaceDomain, kind, key)
+		return err
+	}
+	url, err := resolveRefURL(ctx, cfg.SpaceDomain, kind, key)
+	if err != nil {
+		return err
+	}
+	fmt.Println(url)
+	return nil
+}
+
+// runAction runs a TUI key action (bound via fzf transform-header) and
+// prints a one-line status that fzf shows as the header. It always exits
+// 0 and reports failures in the status line instead, because stderr from
+// transform-header would corrupt the fzf screen.
+//
+//	bkfz --action copy <type> <KEY>
+//	bkfz --action open <type> <KEY>
+func runAction(ctx context.Context, args []string) error {
+	fmt.Println(oneLine(actionStatus(ctx, args)))
+	return nil
+}
+
+// oneLine collapses s to a single line so a multi-line error can't grow
+// the fzf header.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func actionStatus(ctx context.Context, args []string) string {
+	if len(args) < 2 {
+		return "✗ action: ACTION and KEY required"
+	}
+	action := args[0]
+	if action != "copy" && action != "open" {
+		return fmt.Sprintf("✗ unknown action: %q", action)
+	}
+	cfg, err := loadConfigOrInitHint()
+	if err != nil {
+		return "✗ " + err.Error()
+	}
+	kind, key := parseTypeKeyArgs(args[1:])
+	if action == "copy" {
+		url, err := copyRefURL(ctx, cfg.SpaceDomain, kind, key)
+		if err != nil {
+			return "✗ " + err.Error()
+		}
+		return "✓ Copied: " + url
+	}
+	if err := openRefURL(ctx, cfg.SpaceDomain, kind, key); err != nil {
+		return "✗ " + err.Error()
+	}
+	return "✓ Opened: " + key
+}
+
+// copyToClipboard writes text to the system clipboard via the platform's
+// clipboard command (no extra Go dependencies).
+func copyToClipboard(ctx context.Context, text string) error {
+	name, args, err := clipboardCommand(runtime.GOOS, os.Getenv("WAYLAND_DISPLAY") != "", exec.LookPath)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(text)
+	// Leave Stdout/Stderr nil (/dev/null): xclip and wl-copy fork a child
+	// that keeps serving the selection, and it would hold a pipe open
+	// forever, so waiting on captured output would hang the TUI.
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
+}
+
+// clipboardCommand picks the clipboard command for goos. On Linux and the
+// BSDs it returns the first available of wl-copy (Wayland sessions only),
+// xclip, xsel. lookPath is exec.LookPath, injected for tests.
+func clipboardCommand(goos string, wayland bool, lookPath func(string) (string, error)) (string, []string, error) {
+	switch goos {
+	case "darwin":
+		return "pbcopy", nil, nil
+	case "windows":
+		return "clip", nil, nil
+	case "linux", "freebsd", "openbsd", "netbsd":
+		type candidate struct {
+			name string
+			args []string
+		}
+		var candidates []candidate
+		if wayland {
+			candidates = append(candidates, candidate{"wl-copy", nil})
+		}
+		candidates = append(candidates,
+			candidate{"xclip", []string{"-selection", "clipboard"}},
+			candidate{"xsel", []string{"--clipboard", "--input"}},
+		)
+		for _, c := range candidates {
+			if _, err := lookPath(c.name); err == nil {
+				return c.name, c.args, nil
+			}
+		}
+		return "", nil, errors.New("no clipboard command found (install wl-clipboard, xclip, or xsel)")
+	default:
+		return "", nil, fmt.Errorf("clipboard not supported on %s", goos)
+	}
 }
 
 // loadConfigOrInitHint loads the config and, when it is missing,
@@ -639,7 +819,7 @@ func previewIssue(ctx context.Context, db *index.DB, cfg *config.Config, key str
 		fmt.Printf("Due:      %s\n", issue.DueDate.Format("2006-01-02"))
 	}
 	if cfg != nil {
-		fmt.Printf("URL:      https://%s/view/%s\n", cfg.SpaceDomain, key)
+		fmt.Printf("URL:      %s\n", issueURL(cfg.SpaceDomain, key))
 	}
 	if issue.Description != "" {
 		fmt.Println()
@@ -656,7 +836,7 @@ func previewDocument(ctx context.Context, db *index.DB, cfg *config.Config, id s
 	fmt.Printf("# %s\n\n", doc.Title)
 	fmt.Printf("Project:  %s\n", doc.ProjectKey)
 	if cfg != nil {
-		fmt.Printf("URL:      https://%s/document/%s/%s\n", cfg.SpaceDomain, doc.ProjectKey, doc.ID)
+		fmt.Printf("URL:      %s\n", documentURL(cfg.SpaceDomain, doc.ProjectKey, doc.ID))
 	}
 	if doc.Body != "" {
 		fmt.Println()

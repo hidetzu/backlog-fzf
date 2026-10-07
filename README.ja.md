@@ -17,13 +17,13 @@ pure-Go の単一バイナリで動作し、TUI は外部 `fzf` を起動して�
 
 - 課題（issues）とドキュメント（documents）を横断検索
 - `fzf` のインクリメンタルフィルタと preview
-- 選択対象をブラウザで直接オープン
+- 選択対象をブラウザで開く・URL をコピーする（TUI を抜けずに操作可能）
 - 同期進捗（件数と ETA）を表示
 
 ## 必要なもの
 
 - Backlog API キー（`BACKLOG_API_KEY`）
-- [fzf](https://github.com/junegunn/fzf)（TUI 利用時。Homebrew なら自動でインストールされます）
+- [fzf](https://github.com/junegunn/fzf) 0.40+（TUI 利用時。Homebrew なら自動でインストールされます）
 
 ## インストール
 
@@ -91,9 +91,28 @@ bkfz sync -p PROJ             プロジェクト限定同期
 bkfz open <KEY>               課題を開く
 bkfz open doc <DOC_ID>        ドキュメントを開く
 bkfz preview <type> <KEY>     preview 出力
+bkfz url <type> <KEY>         URL を表示（type = issue | doc）
+bkfz url --copy <type> <KEY>  URL をクリップボードにコピー
 bkfz --list <query>           fzf reload 用出力
 bkfz version                  バージョン表示
 ```
+
+## キー操作（TUI）
+
+| キー | 動作 |
+|---|---|
+| `Enter` | ブラウザで開いて終了 |
+| `Ctrl-Y` | URL をクリップボードにコピー（TUI はそのまま） |
+| `Ctrl-O` | ブラウザで開く（TUI はそのまま） |
+| `Ctrl-/` | プレビューの表示切替 |
+| `Shift-↑` / `Shift-↓` | プレビューをスクロール |
+| `Esc` / `Ctrl-C` | 終了 |
+
+検索結果は bkfz のインデックスの結果をそのまま表示します（fzf 側の絞り込みは無効）。そのため、説明文やドキュメント本文だけにヒットしたものも一覧に出ます。
+
+`Ctrl-Y` は、fzf 標準のクエリ行での「ヤンク（貼り戻し）」の代わりに割り当てています。
+
+クリップボード: `pbcopy`（macOS）、`clip`（Windows）、`wl-copy` / `xclip` / `xsel`（Linux）。
 
 ## 設定
 
@@ -133,7 +152,6 @@ API キーは設定ファイルに保存せず、`BACKLOG_API_KEY` 環境変数�
 ## 今後の予定
 
 - comments 検索への対応
-- URL コピーなど、TUI キーバインドの拡張（例: `Ctrl-Y`）
 - 複数 space 対応
 - 添付ファイル本文（PDF/OCR）検索
 - 同期の daemon 化

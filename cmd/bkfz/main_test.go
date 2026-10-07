@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -564,5 +565,100 @@ func TestResolveVersion(t *testing.T) {
 				t.Errorf("resolveVersion(%q, %+v) = %q, want %q", tt.ldflags, tt.info, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTUIOptions_ActionsCallBackIntoBkfz(t *testing.T) {
+	q := shellQuote("/opt/my tools/bkfz")
+	opts := tuiOptions(q)
+	for name, got := range map[string]string{
+		"ReloadCmd":  opts.ReloadCmd,
+		"PreviewCmd": opts.PreviewCmd,
+		"CopyCmd":    opts.CopyCmd,
+		"OpenCmd":    opts.OpenCmd,
+	} {
+		if !strings.HasPrefix(got, q+" ") {
+			t.Errorf("%s = %q, want prefix %q (quoted executable)", name, got, q)
+		}
+	}
+	if opts.CopyCmd != q+" --action copy {1} {2}" {
+		t.Errorf("CopyCmd = %q", opts.CopyCmd)
+	}
+	if opts.OpenCmd != q+" --action open {1} {2}" {
+		t.Errorf("OpenCmd = %q", opts.OpenCmd)
+	}
+}
+
+func TestIssueAndDocumentURL(t *testing.T) {
+	if got, want := issueURL("example.backlog.com", "PROJ-1"), "https://example.backlog.com/view/PROJ-1"; got != want {
+		t.Errorf("issueURL = %q, want %q", got, want)
+	}
+	if got, want := documentURL("example.backlog.com", "PROJ", "abc"), "https://example.backlog.com/document/PROJ/abc"; got != want {
+		t.Errorf("documentURL = %q, want %q", got, want)
+	}
+}
+
+func TestClipboardCommand(t *testing.T) {
+	has := func(names ...string) func(string) (string, error) {
+		return func(n string) (string, error) {
+			for _, h := range names {
+				if h == n {
+					return "/usr/bin/" + n, nil
+				}
+			}
+			return "", errors.New("not found")
+		}
+	}
+	tests := []struct {
+		name     string
+		goos     string
+		wayland  bool
+		lookPath func(string) (string, error)
+		want     string
+		wantErr  bool
+	}{
+		{"macOS", "darwin", false, has(), "pbcopy", false},
+		{"Windows", "windows", false, has(), "clip", false},
+		{"Wayland prefers wl-copy", "linux", true, has("wl-copy", "xclip"), "wl-copy", false},
+		{"X11 ignores wl-copy", "linux", false, has("wl-copy", "xclip"), "xclip", false},
+		{"xsel fallback", "linux", false, has("xsel"), "xsel", false},
+		{"Wayland without wl-copy falls back", "linux", true, has("xclip"), "xclip", false},
+		{"nothing installed", "linux", true, has(), "", true},
+		{"unsupported OS", "plan9", false, has(), "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _, err := clipboardCommand(tt.goos, tt.wayland, tt.lookPath)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("clipboardCommand = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestActionStatus_ReportsErrorsInStatusLine(t *testing.T) {
+	// Missing args never touch config / DB and must not return an error:
+	// fzf shows stdout as the header, stderr would corrupt the screen.
+	if got := actionStatus(context.Background(), []string{"copy"}); !strings.HasPrefix(got, "✗ ") {
+		t.Errorf("actionStatus with missing KEY = %q, want ✗ prefix", got)
+	}
+}
+
+func TestActionStatus_UnknownActionCheckedFirst(t *testing.T) {
+	// Validated before loading config, so misuse is reported as such
+	// even without a config file.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	got := actionStatus(context.Background(), []string{"bogus", "issue", "X-1"})
+	if !strings.Contains(got, "unknown action") {
+		t.Errorf("actionStatus = %q, want unknown action", got)
+	}
+}
+
+func TestOneLine(t *testing.T) {
+	if got, want := oneLine("✗ xclip: Error:\n  Can't open display\n"), "✗ xclip: Error: Can't open display"; got != want {
+		t.Errorf("oneLine = %q, want %q", got, want)
 	}
 }
