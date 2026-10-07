@@ -132,6 +132,9 @@ func runTUI(ctx context.Context) error {
 		if errors.Is(err, tui.ErrFzfNotFound) {
 			return fzfMissingError()
 		}
+		if errors.Is(err, tui.ErrFzfTooOld) {
+			return fmt.Errorf("%w\n\nUpgrade fzf (https://github.com/junegunn/fzf#installation), or search non-interactively:\n  bkfz <query>", err)
+		}
 		return err
 	}
 	if selected == "" {
@@ -596,6 +599,11 @@ func resolveRefURL(ctx context.Context, spaceDomain, kind, key string) (string, 
 }
 
 // openRefURL resolves the URL for (kind, key) and opens it in the browser.
+//
+// The browser command is started but not waited for: ctrl-o runs this
+// inside fzf's synchronous transform-header, and some xdg-open setups run
+// the browser in the foreground, which would freeze the TUI until the
+// browser exits.
 func openRefURL(ctx context.Context, spaceDomain, kind, key string) error {
 	url, err := resolveRefURL(ctx, spaceDomain, kind, key)
 	if err != nil {
@@ -605,7 +613,24 @@ func openRefURL(ctx context.Context, spaceDomain, kind, key string) error {
 	if name == "" {
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
-	return exec.CommandContext(ctx, name, args...).Run()
+	cmd := exec.Command(name, args...) // not CommandContext: must outlive bkfz
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+// copyRefURL resolves the URL for (kind, key), copies it to the
+// clipboard, and returns it.
+func copyRefURL(ctx context.Context, spaceDomain, kind, key string) (string, error) {
+	url, err := resolveRefURL(ctx, spaceDomain, kind, key)
+	if err != nil {
+		return "", err
+	}
+	if err := copyToClipboard(ctx, url); err != nil {
+		return "", err
+	}
+	return url, nil
 }
 
 // runURL prints the URL for an issue or document, or copies it to the
@@ -627,12 +652,13 @@ func runURL(ctx context.Context, args []string) error {
 		return err
 	}
 	kind, key := parseTypeKeyArgs(args)
+	if copyURL {
+		_, err := copyRefURL(ctx, cfg.SpaceDomain, kind, key)
+		return err
+	}
 	url, err := resolveRefURL(ctx, cfg.SpaceDomain, kind, key)
 	if err != nil {
 		return err
-	}
-	if copyURL {
-		return copyToClipboard(ctx, url)
 	}
 	fmt.Println(url)
 	return nil
@@ -646,8 +672,14 @@ func runURL(ctx context.Context, args []string) error {
 //	bkfz --action copy <type> <KEY>
 //	bkfz --action open <type> <KEY>
 func runAction(ctx context.Context, args []string) error {
-	fmt.Println(actionStatus(ctx, args))
+	fmt.Println(oneLine(actionStatus(ctx, args)))
 	return nil
+}
+
+// oneLine collapses s to a single line so a multi-line error can't grow
+// the fzf header.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func actionStatus(ctx context.Context, args []string) string {
@@ -655,29 +687,25 @@ func actionStatus(ctx context.Context, args []string) string {
 		return "✗ action: ACTION and KEY required"
 	}
 	action := args[0]
+	if action != "copy" && action != "open" {
+		return fmt.Sprintf("✗ unknown action: %q", action)
+	}
 	cfg, err := loadConfigOrInitHint()
 	if err != nil {
 		return "✗ " + err.Error()
 	}
 	kind, key := parseTypeKeyArgs(args[1:])
-	switch action {
-	case "copy":
-		url, err := resolveRefURL(ctx, cfg.SpaceDomain, kind, key)
+	if action == "copy" {
+		url, err := copyRefURL(ctx, cfg.SpaceDomain, kind, key)
 		if err != nil {
 			return "✗ " + err.Error()
 		}
-		if err := copyToClipboard(ctx, url); err != nil {
-			return "✗ " + err.Error()
-		}
 		return "✓ Copied: " + url
-	case "open":
-		if err := openRefURL(ctx, cfg.SpaceDomain, kind, key); err != nil {
-			return "✗ " + err.Error()
-		}
-		return "✓ Opened: " + key
-	default:
-		return fmt.Sprintf("✗ unknown action: %q", action)
 	}
+	if err := openRefURL(ctx, cfg.SpaceDomain, kind, key); err != nil {
+		return "✗ " + err.Error()
+	}
+	return "✓ Opened: " + key
 }
 
 // copyToClipboard writes text to the system clipboard via the platform's
@@ -689,8 +717,11 @@ func copyToClipboard(ctx context.Context, text string) error {
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = strings.NewReader(text)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(out)))
+	// Leave Stdout/Stderr nil (/dev/null): xclip and wl-copy fork a child
+	// that keeps serving the selection, and it would hold a pipe open
+	// forever, so waiting on captured output would hang the TUI.
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
 }

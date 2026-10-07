@@ -116,3 +116,42 @@ func contains(args []string, s string) bool {
 	}
 	return false
 }
+
+func TestParseFzfVersion(t *testing.T) {
+	tests := []struct {
+		out    string
+		want   string
+		wantOK bool
+	}{
+		{"0.72.0 (Homebrew)\n", "0.72.0", true},
+		{"0.44.1 (debian)\n", "0.44.1", true},
+		{"0.29.0\n", "0.29.0", true},
+		{"", "", false},
+		{"fzf devel\n", "", false},
+	}
+	for _, tt := range tests {
+		got, ok := parseFzfVersion(tt.out)
+		if got != tt.want || ok != tt.wantOK {
+			t.Errorf("parseFzfVersion(%q) = (%q, %v), want (%q, %v)", tt.out, got, ok, tt.want, tt.wantOK)
+		}
+	}
+}
+
+func TestVersionLess(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"0.29.0", MinFzfVersion, true},
+		{"0.39.9", "0.40.0", true},
+		{"0.40.0", "0.40.0", false},
+		{"0.72.0", "0.40.0", false},
+		{"1.0", "0.40.0", false},
+		{"garbage", "0.40.0", false},
+	}
+	for _, tt := range tests {
+		if got := versionLess(tt.a, tt.b); got != tt.want {
+			t.Errorf("versionLess(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
+	}
+}

@@ -110,6 +110,8 @@ bkfz version                  Print version
 
 Results come from bkfz's index as-is (fzf's own filtering is disabled), so hits in descriptions and document bodies are listed too.
 
+`Ctrl-Y` replaces fzf's default "yank" in the query line.
+
 Clipboard: `pbcopy` (macOS), `clip` (Windows), `wl-copy` / `xclip` / `xsel` (Linux).
 
 ## Configuration

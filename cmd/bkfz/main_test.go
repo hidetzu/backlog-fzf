@@ -646,3 +646,19 @@ func TestActionStatus_ReportsErrorsInStatusLine(t *testing.T) {
 		t.Errorf("actionStatus with missing KEY = %q, want ✗ prefix", got)
 	}
 }
+
+func TestActionStatus_UnknownActionCheckedFirst(t *testing.T) {
+	// Validated before loading config, so misuse is reported as such
+	// even without a config file.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	got := actionStatus(context.Background(), []string{"bogus", "issue", "X-1"})
+	if !strings.Contains(got, "unknown action") {
+		t.Errorf("actionStatus = %q, want unknown action", got)
+	}
+}
+
+func TestOneLine(t *testing.T) {
+	if got, want := oneLine("✗ xclip: Error:\n  Can't open display\n"), "✗ xclip: Error: Can't open display"; got != want {
+		t.Errorf("oneLine = %q, want %q", got, want)
+	}
+}

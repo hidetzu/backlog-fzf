@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -37,6 +38,10 @@ const MinFzfVersion = "0.40.0"
 // turn it into a context-aware message (install hints, etc.).
 var ErrFzfNotFound = errors.New("fzf not found in PATH")
 
+// ErrFzfTooOld is returned (wrapped, with the detected version) when the
+// installed fzf predates MinFzfVersion and would reject our --bind actions.
+var ErrFzfTooOld = errors.New("fzf is too old")
+
 // Run launches fzf and returns the line the user selected.
 // Cancellation (Ctrl-C / Esc) or no-match (exit codes 1, 130) returns ("", nil).
 // Returns ErrFzfNotFound when fzf is missing from PATH.
@@ -44,6 +49,14 @@ func Run(ctx context.Context, opts RunOptions) (string, error) {
 	fzfPath, err := exec.LookPath("fzf")
 	if err != nil {
 		return "", ErrFzfNotFound
+	}
+
+	// Older fzf rejects transform-header / change-header with a bare
+	// "unknown action" error; check up front so the caller can explain.
+	if out, err := exec.CommandContext(ctx, fzfPath, "--version").Output(); err == nil {
+		if v, ok := parseFzfVersion(string(out)); ok && versionLess(v, MinFzfVersion) {
+			return "", fmt.Errorf("%w: found %s, need %s or newer", ErrFzfTooOld, v, MinFzfVersion)
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, fzfPath, buildFzfArgs(opts)...)
@@ -133,4 +146,51 @@ func headerText(opts RunOptions) string {
 		return ""
 	}
 	return strings.Join(keys, " · ")
+}
+
+// parseFzfVersion extracts "X.Y.Z" from `fzf --version` output such as
+// "0.72.0 (Homebrew)" or "0.44.1 (debian)". ok=false when unrecognized,
+// in which case the caller should not block on the version.
+func parseFzfVersion(out string) (string, bool) {
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return "", false
+	}
+	v := strings.TrimPrefix(fields[0], "v")
+	if _, ok := versionParts(v); !ok {
+		return "", false
+	}
+	return v, true
+}
+
+// versionLess reports whether a < b for dotted numeric versions
+// (missing components count as 0). Unparsable input compares as not less.
+func versionLess(a, b string) bool {
+	pa, okA := versionParts(a)
+	pb, okB := versionParts(b)
+	if !okA || !okB {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if pa[i] != pb[i] {
+			return pa[i] < pb[i]
+		}
+	}
+	return false
+}
+
+func versionParts(v string) ([3]int, bool) {
+	var out [3]int
+	parts := strings.Split(v, ".")
+	if len(parts) == 0 || len(parts) > 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
