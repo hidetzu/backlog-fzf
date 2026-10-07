@@ -29,11 +29,11 @@ lint: ## Run golangci-lint
 tidy: ## go mod tidy
 	go mod tidy
 
-demo: build ## Regenerate docs/demo.gif with VHS (fictional seed data)
-	go run ./scripts/demo-seed $(DEMO_DIR)
-	PATH="$(CURDIR)/$(BIN_DIR):$$PATH" vhs docs/demo.tape
+demo: build ## Seed fictional data into $(DEMO_DIR) and record docs/demo.gif with VHS
+	go run ./scripts/demo-seed "$(abspath $(DEMO_DIR))"
+	BKFZ_DEMO_DIR="$(abspath $(DEMO_DIR))" PATH="$(CURDIR)/$(BIN_DIR):$$PATH" vhs docs/demo.tape
 
 clean: ## Remove build artifacts
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) $(DEMO_DIR)
 
 .DEFAULT_GOAL := help

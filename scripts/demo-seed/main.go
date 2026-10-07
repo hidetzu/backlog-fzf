@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hidetzu/backlog-fzf/internal/backlog"
@@ -136,8 +137,12 @@ func run(ctx context.Context, dir string) error {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return err
 	}
-	if err := os.Remove(dbPath); err != nil && !os.IsNotExist(err) {
-		return err
+	// Remove SQLite sidecar files too, so a stale journal from an
+	// interrupted run can't be replayed onto the fresh DB.
+	for _, suffix := range []string{"", "-journal", "-wal", "-shm"} {
+		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	db, err := index.Open(dbPath)
 	if err != nil {
@@ -187,10 +192,6 @@ func run(ctx context.Context, dir string) error {
 
 // projectKey returns the "WEB" part of "WEB-142".
 func projectKey(issueKey string) string {
-	for n, r := range issueKey {
-		if r == '-' {
-			return issueKey[:n]
-		}
-	}
-	return issueKey
+	key, _, _ := strings.Cut(issueKey, "-")
+	return key
 }
