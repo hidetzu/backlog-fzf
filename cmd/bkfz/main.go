@@ -20,6 +20,7 @@ import (
 
 	"github.com/hidetzu/backlog-fzf/internal/backlog"
 	"github.com/hidetzu/backlog-fzf/internal/config"
+	"github.com/hidetzu/backlog-fzf/internal/embed"
 	"github.com/hidetzu/backlog-fzf/internal/index"
 	"github.com/hidetzu/backlog-fzf/internal/syncer"
 	"github.com/hidetzu/backlog-fzf/internal/tui"
@@ -45,6 +46,7 @@ Usage:
   bkfz <query>               Non-interactive search across issues and documents
   bkfz init                  Create config scaffold and register API key
   bkfz sync [flags]          Sync issues + documents from Backlog into local index
+  bkfz embed [--rebuild]     Build or update the semantic index (embedding: config section)
   bkfz open <KEY>            Open issue in browser
   bkfz open <type> <KEY>     Open issue|doc explicitly (type = issue | doc)
   bkfz preview <KEY>         Print preview text for an issue
@@ -58,7 +60,11 @@ Usage:
 
 Sync flags:
   --refetch                  Re-fetch everything, ignoring watermarks (stale local records remain)
+  --no-embed                 Skip the semantic index update after syncing
   -p PROJ                    Limit to project key
+
+Embed flags:
+  --rebuild                  Drop every stored vector and embed everything again
 
 Environment:
   BACKLOG_API_KEY            Backlog personal API key (required for sync)
@@ -96,6 +102,8 @@ func run(ctx context.Context, args []string) error {
 		return runInit(ctx, args[1:])
 	case "sync":
 		return runSync(ctx, args[1:])
+	case "embed":
+		return runEmbed(ctx, args[1:])
 	case "open":
 		return runOpen(ctx, args[1:])
 	case "preview":
@@ -171,6 +179,9 @@ func resolveVersion(ldflagsVersion string, info *debug.BuildInfo) string {
 	}
 	return strings.TrimPrefix(v, "v")
 }
+
+// semanticHint explains how to enable semantic search.
+const semanticHint = "semantic search is not configured; add an embedding: section to config.yaml (see README)"
 
 // tuiOptions returns the fzf wiring for the TUI. q is the shell-quoted
 // path of this executable; every action calls back into bkfz.
@@ -278,6 +289,7 @@ func runSync(ctx context.Context, args []string) error {
 	fs.SetOutput(io.Discard)
 	refetch := fs.Bool("refetch", false, "Re-fetch all issues, ignoring watermark (stale local records remain)")
 	project := fs.String("p", "", "Limit to project key")
+	noEmbed := fs.Bool("no-embed", false, "Skip the semantic index update after syncing")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("sync: %w", err)
 	}
@@ -331,7 +343,142 @@ func runSync(ctx context.Context, args []string) error {
 	if err := syncer.Documents(ctx, client, db, syncOpts); err != nil {
 		return err
 	}
+
+	// Semantic index: only refresh an index that already exists. The first
+	// build is an explicit `bkfz embed` (it can take a while), and a failure
+	// here must not fail the sync that just succeeded.
+	if cfg.Embedding == nil || *noEmbed {
+		return nil
+	}
+	built, err := db.HasEmbeddingSchema(ctx)
+	if err != nil {
+		pp.Notice("warning: semantic index not updated: " + oneLine(err.Error()))
+		return nil
+	}
+	if !built {
+		pp.Notice("semantic index not built yet; run `bkfz embed` to create it")
+		return nil
+	}
+	pp.SetKind("embeddings")
+	if err := runEmbedStage(ctx, cfg.Embedding, db, false, pp); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		pp.Notice("warning: semantic index not updated: " + oneLine(err.Error()))
+		switch {
+		case errors.Is(err, syncer.ErrDimensionsIgnored):
+			pp.Notice("         set embedding.dimensions to 0 in config.yaml, then run `bkfz embed --rebuild`")
+		case errors.Is(err, syncer.ErrEmbeddingMismatch):
+			pp.Notice("         run `bkfz embed --rebuild` to re-embed with the current model / dimensions")
+		default:
+			pp.Notice("         run `bkfz embed` once the embedding server is available")
+		}
+	}
 	return nil
+}
+
+// runEmbed builds or updates the semantic index.
+//
+//	bkfz embed             embed new / changed records
+//	bkfz embed --rebuild   drop every vector and embed everything again
+func runEmbed(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("embed", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	rebuild := fs.Bool("rebuild", false, "Drop every stored vector and embed everything again")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("embed: %w", err)
+	}
+	cfg, err := loadConfigOrInitHint()
+	if err != nil {
+		return err
+	}
+	if cfg.Embedding == nil {
+		return errors.New(semanticHint)
+	}
+	db, err := openIndexDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	pp := &progressPrinter{out: os.Stderr, isTTY: isTerminal(os.Stderr)}
+	defer pp.Close()
+	pp.SetKind("embeddings")
+	if err := runEmbedStage(ctx, cfg.Embedding, db, *rebuild, pp); err != nil {
+		if errors.Is(err, syncer.ErrDimensionsIgnored) {
+			return &hintedError{err: err, hint: "The embedding server does not honor embedding.dimensions, so a rebuild cannot help.\nSet embedding.dimensions to 0 (model native) in config.yaml and run `bkfz embed --rebuild`"}
+		}
+		if errors.Is(err, syncer.ErrEmbeddingMismatch) {
+			return &hintedError{err: err, hint: "The stored vectors were made with a different model or dimension count.\nRun `bkfz embed --rebuild` to re-embed everything with the current config"}
+		}
+		return embedServerError(cfg.Embedding, err)
+	}
+	return nil
+}
+
+// runEmbedStage runs syncer.Embed with the CLI's progress display. It
+// warns on stderr when Backlog content is about to leave this machine.
+func runEmbedStage(ctx context.Context, ec *config.Embedding, db *index.DB, rebuild bool, pp *progressPrinter) error {
+	pp.label = "embedded" // so a run with nothing to embed still reports "embedded"
+	if !ec.IsLocal() {
+		pp.Notice(fmt.Sprintf("note: sending issue and document text to %s (non-local embedding server)", ec.BaseURL))
+	}
+	opts := syncer.EmbedOptions{
+		Model:      ec.Model,
+		Dimensions: ec.Dimensions,
+		Text:       textOptions(ec),
+		Rebuild:    rebuild,
+		OnProgress: pp.Print,
+	}
+	return syncer.Embed(ctx, newEmbedClient(ec), db, opts)
+}
+
+func textOptions(ec *config.Embedding) embed.TextOptions {
+	return embed.TextOptions{
+		DocumentPrefix: derefString(ec.DocumentPrefix),
+		MaxIssueChars:  ec.MaxIssueChars,
+		ChunkChars:     ec.ChunkChars,
+		MaxChunks:      ec.MaxChunks,
+	}
+}
+
+func newEmbedClient(ec *config.Embedding) *embed.Client {
+	return &embed.Client{
+		BaseURL:    ec.BaseURL,
+		Model:      ec.Model,
+		Dimensions: ec.Dimensions,
+		APIKey:     ec.APIKey(),
+	}
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// hintedError is an error followed by a multi-line hint for humans. The
+// hint is shown on the terminal but dropped from fzf pseudo lines.
+type hintedError struct {
+	err  error
+	hint string
+}
+
+func (e *hintedError) Error() string { return e.err.Error() + "\n\n" + e.hint }
+func (e *hintedError) Unwrap() error { return e.err }
+
+// embedServerError adds a start / install hint when the embedding server
+// cannot be reached.
+func embedServerError(ec *config.Embedding, err error) error {
+	if !errors.Is(err, embed.ErrUnreachable) {
+		return err
+	}
+	hint := "Check embedding.base_url in config.yaml"
+	if ec.IsLocal() {
+		hint = "Is the embedding server running? For Ollama:\n  ollama serve\n  ollama pull " + ec.Model
+	}
+	return &hintedError{err: err, hint: hint}
 }
 
 // maxClientRetries is the total retry count used for display (matches backlog.maxRetries).
@@ -349,6 +496,7 @@ type progressPrinter struct {
 	out           io.Writer
 	isTTY         bool
 	kind          string    // e.g. "issues" / "documents"; empty = no label
+	label         string    // "fetched" (sync) or "embedded" (embed stage); empty = "fetched"
 	total         int       // denominator received via StageTotal; 0 = no "/N" display
 	started       time.Time // set on StageFetching for ETA calculation; reset by SetKind
 	fetchedActive bool      // whether a [fetched] line is currently open in TTY mode
@@ -360,6 +508,7 @@ type progressPrinter struct {
 func (p *progressPrinter) SetKind(kind string) {
 	p.endFetched()
 	p.kind = kind
+	p.label = ""
 	p.total = 0
 	p.started = time.Time{}
 }
@@ -368,6 +517,11 @@ func (p *progressPrinter) Print(stage syncer.ProgressStage, n int) {
 	switch stage {
 	case syncer.StageTotal:
 		p.total = n
+		if p.started.IsZero() {
+			// Embed has no fetching stage; the clock starts before the
+			// first batch so the rate includes it.
+			p.started = time.Now()
+		}
 	case syncer.StageFetching:
 		p.started = time.Now()
 		if p.kind != "" {
@@ -375,10 +529,13 @@ func (p *progressPrinter) Print(stage syncer.ProgressStage, n int) {
 		} else {
 			fmt.Fprintln(p.out, "fetching...")
 		}
-	case syncer.StageFetched:
+	case syncer.StageFetched, syncer.StageEmbedded:
 		var elapsed time.Duration
 		if !p.started.IsZero() {
 			elapsed = time.Since(p.started)
+		}
+		if stage == syncer.StageEmbedded {
+			p.label = "embedded"
 		}
 		line := p.formatFetched(n, elapsed)
 		if p.isTTY {
@@ -394,9 +551,12 @@ func (p *progressPrinter) Print(stage syncer.ProgressStage, n int) {
 		fmt.Fprintf(p.out, "upserting %d...\n", n)
 	case syncer.StageDone:
 		p.endFetched() // safety net for paths that ended after StageFetched without StageFiltered
-		if p.kind != "" {
+		switch {
+		case p.label == "embedded":
+			fmt.Fprintf(p.out, "%s ok (%d embedded)\n", p.kind, n)
+		case p.kind != "":
 			fmt.Fprintf(p.out, "%s sync ok (%d upserted)\n", p.kind, n)
-		} else {
+		default:
 			fmt.Fprintf(p.out, "sync ok (%d upserted)\n", n)
 		}
 	}
@@ -404,14 +564,19 @@ func (p *progressPrinter) Print(stage syncer.ProgressStage, n int) {
 
 // formatFetched returns "[fetched: N]" or a richer form including total / ETA.
 // ETA is only attached when elapsed is large enough (>= etaWarmup) and total is known.
+// The label is "fetched" for sync and "embedded" for the embedding stage.
 func (p *progressPrinter) formatFetched(n int, elapsed time.Duration) string {
+	label := p.label
+	if label == "" {
+		label = "fetched"
+	}
 	if p.total <= 0 {
-		return fmt.Sprintf("  [fetched: %d]", n)
+		return fmt.Sprintf("  [%s: %d]", label, n)
 	}
 	if eta, ok := computeETA(n, p.total, elapsed); ok {
-		return fmt.Sprintf("  [fetched: %d/%d ETA %s]", n, p.total, eta)
+		return fmt.Sprintf("  [%s: %d/%d ETA %s]", label, n, p.total, eta)
 	}
-	return fmt.Sprintf("  [fetched: %d/%d]", n, p.total)
+	return fmt.Sprintf("  [%s: %d/%d]", label, n, p.total)
 }
 
 // etaWarmup is the minimum elapsed time before ETA is shown.
