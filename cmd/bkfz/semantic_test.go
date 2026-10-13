@@ -207,3 +207,15 @@ func TestRunSemantic_RequiresQuery(t *testing.T) {
 		t.Errorf("got %v", err)
 	}
 }
+
+func TestTUIOptions_SemanticBinding(t *testing.T) {
+	q := shellQuote("/opt/bkfz")
+	on := tuiOptions(q, true)
+	if on.SemanticCmd != q+" --list --semantic {q}" || on.SemanticHint != "" {
+		t.Errorf("enabled: %+v", on)
+	}
+	off := tuiOptions(q, false)
+	if off.SemanticCmd != "" || off.SemanticHint == "" {
+		t.Errorf("disabled: %+v", off)
+	}
+}

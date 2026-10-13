@@ -570,7 +570,7 @@ func TestResolveVersion(t *testing.T) {
 
 func TestTUIOptions_ActionsCallBackIntoBkfz(t *testing.T) {
 	q := shellQuote("/opt/my tools/bkfz")
-	opts := tuiOptions(q)
+	opts := tuiOptions(q, false)
 	for name, got := range map[string]string{
 		"ReloadCmd":  opts.ReloadCmd,
 		"PreviewCmd": opts.PreviewCmd,

@@ -142,7 +142,7 @@ func runTUI(ctx context.Context) error {
 	if err != nil {
 		exe = "bkfz" // on failure, fall back to "bkfz" resolved via PATH
 	}
-	selected, err := tui.Run(ctx, tuiOptions(shellQuote(exe)))
+	selected, err := tui.Run(ctx, tuiOptions(shellQuote(exe), cfg.Embedding != nil))
 	if err != nil {
 		if errors.Is(err, tui.ErrFzfNotFound) {
 			return fzfMissingError()
@@ -159,6 +159,9 @@ func runTUI(ctx context.Context) error {
 	kind, key, ok := parseSelectedRef(selected)
 	if !ok {
 		return fmt.Errorf("could not parse type/key from selected line: %q", selected)
+	}
+	if kind == kindError {
+		return nil // the user pressed Enter on an error pseudo line
 	}
 	return openRefURL(ctx, cfg.SpaceDomain, kind, key)
 }
@@ -187,18 +190,26 @@ func resolveVersion(ldflagsVersion string, info *debug.BuildInfo) string {
 	return strings.TrimPrefix(v, "v")
 }
 
-// semanticHint explains how to enable semantic search.
+// semanticHint is shown in the fzf header when ctrl-s is pressed without
+// an embedding: config section.
 const semanticHint = "semantic search is not configured; add an embedding: section to config.yaml (see README)"
 
 // tuiOptions returns the fzf wiring for the TUI. q is the shell-quoted
-// path of this executable; every action calls back into bkfz.
-func tuiOptions(q string) tui.RunOptions {
-	return tui.RunOptions{
+// path of this executable; every action calls back into bkfz. semantic
+// enables the ctrl-s one-shot semantic search binding.
+func tuiOptions(q string, semantic bool) tui.RunOptions {
+	opts := tui.RunOptions{
 		ReloadCmd:  q + " --list {q}",
 		PreviewCmd: q + " preview {1} {2}",
 		CopyCmd:    q + " --action copy {1} {2}",
 		OpenCmd:    q + " --action open {1} {2}",
 	}
+	if semantic {
+		opts.SemanticCmd = q + " --list --semantic {q}"
+	} else {
+		opts.SemanticHint = semanticHint
+	}
+	return opts
 }
 
 // parseSelectedRef extracts (kind, key, ok) from a formatIssueLine /
@@ -1139,6 +1150,11 @@ func runPreview(ctx context.Context, args []string) error {
 		return previewIssue(ctx, db, cfg, key)
 	case kindDocument:
 		return previewDocument(ctx, db, cfg, key)
+	case kindError:
+		fmt.Println("Semantic search failed; the message is shown in the list.")
+		fmt.Println()
+		fmt.Println("Type to return to keyword search. See the README for setup.")
+		return nil
 	default:
 		return fmt.Errorf("unknown kind: %q", kind)
 	}
