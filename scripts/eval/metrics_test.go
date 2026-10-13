@@ -43,7 +43,8 @@ func TestSummarize(t *testing.T) {
 
 func TestCases_ReferToSeededRecords(t *testing.T) {
 	refs := seededRefs()
-	for _, c := range cases {
+	all := append(append([]evalCase(nil), cases...), partialCases...)
+	for _, c := range all {
 		if len(c.want) == 0 {
 			t.Errorf("case %q has no expected record", c.query)
 		}

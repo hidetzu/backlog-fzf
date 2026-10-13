@@ -95,6 +95,7 @@ bkfz url <type> <KEY>         URL を表示（type = issue | doc）
 bkfz url --copy <type> <KEY>  URL をクリップボードにコピー
 bkfz --list <query>           fzf reload 用出力
 bkfz --semantic <query>       非対話の意味検索（後述）
+bkfz --hybrid <query>         キーワード検索と意味検索の融合（Reciprocal Rank Fusion）
 bkfz embed                    意味検索インデックスの作成・更新
 bkfz embed --rebuild          全件を埋め込み直す（モデル変更後）
 bkfz sync --no-embed          意味検索インデックスを更新せずに同期
@@ -176,6 +177,7 @@ bkfz                         # いつも通りキーワードを入力し、Ctrl
 - TUI では `Ctrl-S`（または `Alt-S`）で今のクエリを意味検索に掛け直し、プロンプトが `semantic>` に変わります。文字を打つとキーワード検索に戻ります。サーバに接続できない場合は、エラーが一覧の 1 行として表示されます。
 - 埋め込む内容: 課題は件名＋説明の先頭 1,200 文字、ドキュメントはタイトル＋本文を 1,000 文字ごとに分割したもの（1 文書あたり最大 8 個）。状態・担当者・日付は含めません。
 - インデックスは 1 記録あたり約 3KB 増えます（768 次元モデルの場合）。`model`（または `dimensions`）を変えたら `bkfz embed --rebuild` が必要です。
+- `bkfz --hybrid <query>` はキーワード検索と意味検索の順位を融合します（両方で見つかった記録が上位）。`tui_mode: hybrid` にすると `Ctrl-S` がこれを使います。評価セットでは両者の成績が同じだったため、既定は `semantic` のままです。
 - OpenAI 互換の `/v1/embeddings` を持つサーバならどれでも使えます（LM Studio、llama.cpp server、各社のクラウド API）。クラウド API では `api_key_env` にキーを持つ環境変数名を指定します。**Backlog の本文がそのサーバに送信される**ので、端末の外に向ける場合は組織のポリシーを確認してください。URL がローカルでない場合、bkfz は実行時にその旨を表示します。
 
 省略可能なキーと既定値:
@@ -191,6 +193,7 @@ embedding:
   max_issue_chars: 1200
   chunk_chars: 1000
   max_chunks: 8
+  tui_mode: semantic       # Ctrl-S の動作: semantic | hybrid
 ```
 
 ## 既知の制限

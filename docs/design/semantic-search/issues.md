@@ -2,7 +2,7 @@
 
 各 Issue は 1 PR で閉じられる粒度を狙う。依存順に並べている。番号は仮。
 
-> 2026-10-13: S1〜S9 を実装済み（レビュー反映後。差分は README.md §15）。S10 も実装済み（README.md §15.2）。Phase 2 は未着手。
+> 2026-10-13: S1〜S10 を実装済み（PR #13、main にマージ）。S11 も実装済み（README.md §15.3）。S12 / S13 は保留。
 
 ## Phase 1（MVP）
 
@@ -58,7 +58,7 @@
 ## Phase 2（MVP の利用状況を見て判断）
 
 ### S11. feat(search): `--hybrid`（RRF）
-- FTS top-100 と vector top-100 を Reciprocal Rank Fusion で融合（パラメータは S10 の評価セットで決める）。S10 で semantic / hybrid を比較し、ctrl-s の既定を決める。
+- 実装済み: `internal/search` パッケージ（Keyword / Semantic / Hybrid、RRF k=60）、`bkfz --hybrid`、`--list --hybrid`、`embedding.tui_mode: semantic|hybrid`（既定 semantic）。評価セットに partial（固有名詞＋言い換え）12 件を追加し、semantic / hybrid を並べて測定。両者の指標は一致したため既定は semantic のまま。
 
 ### S12. feat(tui): 逐次意味検索モード（`bkfz --semantic-tui` などの起動オプション）
 - `--list --semantic --delay 300ms {q}` の debounce を bkfz 内に実装（fzf が旧 reload を terminate する前提）。Windows は fzf 0.71 以上を要求。

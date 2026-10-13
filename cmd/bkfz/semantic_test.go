@@ -160,15 +160,42 @@ func TestSemanticLines_EmbedderErrorPropagates(t *testing.T) {
 	}
 }
 
-func TestSplitSemanticFlag(t *testing.T) {
-	if s, q := splitSemanticFlag([]string{"--semantic", "a", "b"}); !s || q != "a b" {
-		t.Errorf("got %v %q", s, q)
+func TestSplitModeFlag(t *testing.T) {
+	if m, q := splitModeFlag([]string{"--semantic", "a", "b"}); m != "semantic" || q != "a b" {
+		t.Errorf("got %q %q", m, q)
 	}
-	if s, q := splitSemanticFlag([]string{"a", "--semantic"}); s || q != "a --semantic" {
-		t.Errorf("non-leading flag must be part of the query: got %v %q", s, q)
+	if m, q := splitModeFlag([]string{"--hybrid", "a"}); m != "hybrid" || q != "a" {
+		t.Errorf("got %q %q", m, q)
 	}
-	if s, q := splitSemanticFlag(nil); s || q != "" {
-		t.Errorf("got %v %q", s, q)
+	if m, q := splitModeFlag([]string{"a", "--semantic"}); m != "" || q != "a --semantic" {
+		t.Errorf("non-leading flag must be part of the query: got %q %q", m, q)
+	}
+	if m, q := splitModeFlag(nil); m != "" || q != "" {
+		t.Errorf("got %q %q", m, q)
+	}
+}
+
+func TestModeLines_HybridFusesKeywordAndSemantic(t *testing.T) {
+	db, ec := semanticFixture(t)
+	fe := &fakeEmbedder{vectors: map[string][]float32{
+		"title: login fails | text: ": {1, 0, 0},
+		"title: slow export | text: ": {0, 1, 0},
+		"title: setup guide | text: ": {0.9, 0.1, 0},
+		*ec.QueryPrefix + "export":    {0.9, 0.1, 0}, // semantically closest to the guide ...
+	}}
+	buildIndex(t, db, ec, fe)
+	// ... but "export" is a keyword hit for P-2 only, so hybrid lifts P-2
+	// above the guide while semantic alone keeps the guide first.
+	hyb, err := modeLines(context.Background(), db, fe, ec, "hybrid", "export", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sem, _ := modeLines(context.Background(), db, fe, ec, "semantic", "export", 10)
+	if !strings.HasPrefix(sem[0], "doc\td1\t") {
+		t.Errorf("semantic baseline: %q", sem)
+	}
+	if !strings.HasPrefix(hyb[0], "issue\tP-2\t") {
+		t.Errorf("hybrid should rank the keyword+semantic hit first, got %q", hyb)
 	}
 }
 
@@ -203,19 +230,32 @@ func TestErrorLine_DropsHint(t *testing.T) {
 
 func TestRunSemantic_RequiresQuery(t *testing.T) {
 	err := runSemantic(context.Background(), nil)
-	if err == nil || !strings.Contains(err.Error(), "QUERY required") {
+	if err == nil || !strings.Contains(err.Error(), "--semantic: QUERY required") {
+		t.Errorf("got %v", err)
+	}
+	if err := runHybrid(context.Background(), []string{"  "}); err == nil || !strings.Contains(err.Error(), "--hybrid: QUERY required") {
 		t.Errorf("got %v", err)
 	}
 }
 
 func TestTUIOptions_SemanticBinding(t *testing.T) {
 	q := shellQuote("/opt/bkfz")
-	on := tuiOptions(q, true)
-	if on.SemanticCmd != q+" --list --semantic {q}" || on.SemanticHint != "" {
+	on := tuiOptions(q, "semantic")
+	if on.SemanticCmd != q+" --list --semantic {q}" || on.SemanticPrompt != "semantic> " || on.SemanticHint != "" {
 		t.Errorf("enabled: %+v", on)
 	}
-	off := tuiOptions(q, false)
+	hy := tuiOptions(q, "hybrid")
+	if hy.SemanticCmd != q+" --list --hybrid {q}" || hy.SemanticPrompt != "hybrid> " {
+		t.Errorf("hybrid: %+v", hy)
+	}
+	off := tuiOptions(q, "")
 	if off.SemanticCmd != "" || off.SemanticHint == "" {
 		t.Errorf("disabled: %+v", off)
+	}
+	if tuiMode(&config.Config{}) != "" {
+		t.Error("tuiMode without embedding should be empty")
+	}
+	if got := tuiMode(&config.Config{Embedding: &config.Embedding{TUIMode: "hybrid"}}); got != "hybrid" {
+		t.Errorf("tuiMode = %q", got)
 	}
 }

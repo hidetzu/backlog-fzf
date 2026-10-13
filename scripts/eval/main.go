@@ -1,7 +1,10 @@
 // Command eval measures semantic search quality on the fictional demo
 // data (scripts/demodata) with a set of paraphrase queries (cases.go).
 // It needs a running embedding server (Ollama by default) but no Backlog
-// access, API key, or config file: the index is built in memory.
+// access, API key, or config file: the index is built in memory. Two sets
+// are scored, each in semantic and hybrid mode: "paraphrase" queries that
+// share no keyword with their target, and "partial" queries that contain
+// one exact term plus a vague description.
 //
 // Usage:
 //
@@ -22,10 +25,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/hidetzu/backlog-fzf/internal/backlog"
 	"github.com/hidetzu/backlog-fzf/internal/config"
 	"github.com/hidetzu/backlog-fzf/internal/embed"
 	"github.com/hidetzu/backlog-fzf/internal/index"
+	"github.com/hidetzu/backlog-fzf/internal/search"
 	"github.com/hidetzu/backlog-fzf/internal/syncer"
 	"github.com/hidetzu/backlog-fzf/scripts/demodata"
 )
@@ -65,7 +68,7 @@ func main() {
 }
 
 // run builds the in-memory index, embeds it, runs every case and prints
-// the report. ok=false means the Recall@5 gate failed.
+// the report. ok=false means the Recall@5 gate failed for some mode.
 func run(ctx context.Context, ec config.Embedding, k int, minRecall5 float64, verbose bool, out *os.File) (bool, error) {
 	db, err := index.Open(":memory:")
 	if err != nil {
@@ -97,78 +100,97 @@ func run(ctx context.Context, ec config.Embedding, k int, minRecall5 float64, ve
 	fmt.Fprintf(out, "model=%s dimensions=%d records=%d vectors=%d embed=%s\n",
 		meta.Model, meta.Dimensions, len(issues)+len(docs), nVec, time.Since(start).Round(time.Millisecond))
 
-	issueKeys, docIDs := refTables(issues, docs)
-	var results []result
-	var ftsHits int
-	var queryTime time.Duration
-	for _, c := range cases {
-		t0 := time.Now()
-		vecs, err := client.Embed(ctx, []string{*ec.QueryPrefix + c.query})
-		if err != nil {
-			return false, fmt.Errorf("embed query %q: %w", c.query, err)
-		}
-		q := vecs[0]
-		index.NormalizeVector(q)
-		hits, err := db.SearchVectors(ctx, q, k)
-		if err != nil {
-			return false, err
-		}
-		queryTime += time.Since(t0)
-		var ranks []string
-		for _, h := range hits {
-			switch h.Kind {
-			case index.KindIssue:
-				ranks = append(ranks, "issue:"+issueKeys[h.RefID])
-			case index.KindDocument:
-				ranks = append(ranks, "doc:"+docIDs[h.RefID])
-			}
-		}
-		results = append(results, result{c, ranks})
+	sets := []struct {
+		name  string
+		cases []evalCase
+	}{
+		{"paraphrase", cases},
+		{"partial", partialCases},
+	}
+	modes := []struct {
+		name string
+		run  func(context.Context, string) ([]search.Hit, error)
+	}{
+		{"semantic", func(ctx context.Context, q string) ([]search.Hit, error) {
+			return search.Semantic(ctx, db, client, &ec, q, k)
+		}},
+		{"hybrid", func(ctx context.Context, q string) ([]search.Hit, error) {
+			return search.Hybrid(ctx, db, client, &ec, q, k)
+		}},
+	}
 
-		// Keyword baseline: does the FTS path find any wanted record?
-		if ftsFinds(ctx, db, c) {
-			ftsHits++
-		}
-		if verbose {
-			fmt.Fprintf(out, "\n%q  want %v\n", c.query, c.want)
-			for i, r := range ranks[:min(5, len(ranks))] {
-				mark := " "
-				if rankOf([]string{r}, c.want) == 1 {
-					mark = "*"
+	type cell struct {
+		s     summary
+		query time.Duration
+	}
+	table := map[string]map[string]cell{}  // set → mode → metrics
+	var allResults = map[string][]result{} // mode → results over every set
+	ftsHits := map[string]int{}
+	for _, set := range sets {
+		table[set.name] = map[string]cell{}
+		for _, mode := range modes {
+			var results []result
+			var queryTime time.Duration
+			for _, c := range set.cases {
+				t0 := time.Now()
+				hits, err := mode.run(ctx, c.query)
+				if err != nil {
+					return false, fmt.Errorf("%s %q: %w", mode.name, c.query, err)
 				}
-				fmt.Fprintf(out, "  %s%d. %s  (%.3f)\n", mark, i+1, r, hits[i].Score)
+				queryTime += time.Since(t0)
+				ranks := make([]string, len(hits))
+				for i, h := range hits {
+					ranks[i] = h.Ref()
+				}
+				results = append(results, result{c, ranks})
+				if verbose && mode.name == modes[0].name {
+					printTop(out, c, hits)
+				}
+			}
+			table[set.name][mode.name] = cell{summarize(results), queryTime / time.Duration(max(len(set.cases), 1))}
+			allResults[mode.name] = append(allResults[mode.name], results...)
+		}
+		for _, c := range set.cases {
+			if ftsFinds(ctx, db, c) {
+				ftsHits[set.name]++
 			}
 		}
 	}
 
-	s := summarize(results)
-	fmt.Fprintf(out, "\nsemantic: %s  (avg query %s)\n", s, (queryTime / time.Duration(max(len(cases), 1))).Round(time.Millisecond))
-	fmt.Fprintf(out, "keyword : hits=%d/%d (same queries through the FTS path, any wanted record in top %d)\n", ftsHits, len(cases), k)
-	if len(s.misses) > 0 {
-		fmt.Fprintln(out, "misses:")
+	fmt.Fprintf(out, "\n%-12s %-9s %6s %8s %8s %6s   %s\n", "set", "mode", "cases", "Recall@1", "Recall@5", "MRR", "avg query")
+	for _, set := range sets {
+		for _, mode := range modes {
+			c := table[set.name][mode.name]
+			fmt.Fprintf(out, "%-12s %-9s %6d %8.2f %8.2f %6.2f   %s\n", set.name, mode.name, c.s.n, c.s.recallAt1(), c.s.recallAt5(), c.s.mrr(), c.query.Round(time.Millisecond))
+		}
+		fmt.Fprintf(out, "%-12s %-9s %6d   (any wanted record returned by the FTS path: %d/%d)\n", set.name, "keyword", len(set.cases), ftsHits[set.name], len(set.cases))
+	}
+	fmt.Fprintln(out)
+	var gateFailed bool
+	for _, mode := range modes {
+		s := summarize(allResults[mode.name])
+		fmt.Fprintf(out, "%-9s all: %s\n", mode.name, s)
 		for _, m := range s.misses {
-			fmt.Fprintf(out, "  %q  want %v\n", m.query, m.want)
+			fmt.Fprintf(out, "          miss %q  want %v\n", m.query, m.want)
+		}
+		if minRecall5 > 0 && s.recallAt5() < minRecall5 {
+			fmt.Fprintf(out, "FAIL: %s Recall@5 %.2f < %.2f\n", mode.name, s.recallAt5(), minRecall5)
+			gateFailed = true
 		}
 	}
-	if minRecall5 > 0 && s.recallAt5() < minRecall5 {
-		fmt.Fprintf(out, "\nFAIL: Recall@5 %.2f < %.2f\n", s.recallAt5(), minRecall5)
-		return false, nil
-	}
-	return true, nil
+	return !gateFailed, nil
 }
 
-// refTables maps rowids back to "issue:KEY" / "doc:ID" refs.
-func refTables(issues []backlog.Issue, docs []backlog.Document) (map[int64]string, map[int64]string) {
-	issueKeys := map[int64]string{}
-	for _, i := range issues {
-		issueKeys[int64(i.ID)] = i.Key
+// printTop prints the top-5 hits of one query, marking wanted records.
+func printTop(out *os.File, c evalCase, hits []search.Hit) {
+	fmt.Fprintf(out, "\n%q  want %v\n", c.query, c.want)
+	for i, h := range hits[:min(5, len(hits))] {
+		mark := " "
+		if rankOf([]string{h.Ref()}, c.want) == 1 {
+			mark = "*"
+		}
+		fmt.Fprintf(out, "  %s%d. %s  (%.3f)\n", mark, i+1, h.Ref(), h.Score)
 	}
-	// Documents get AUTOINCREMENT rowids in insertion order, starting at 1.
-	docIDs := map[int64]string{}
-	for n, d := range docs {
-		docIDs[int64(n+1)] = d.ID
-	}
-	return issueKeys, docIDs
 }
 
 // ftsFinds runs the keyword search for the case and reports whether any

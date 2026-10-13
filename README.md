@@ -95,6 +95,7 @@ bkfz url <type> <KEY>         Print the URL (type = issue | doc)
 bkfz url --copy <type> <KEY>  Copy the URL to the clipboard
 bkfz --list <query>           List output for fzf reload
 bkfz --semantic <query>       Non-interactive semantic search (see below)
+bkfz --hybrid <query>         Keyword + semantic search fused (Reciprocal Rank Fusion)
 bkfz embed                    Build / update the semantic index
 bkfz embed --rebuild          Re-embed everything (after changing the model)
 bkfz sync --no-embed          Sync without touching the semantic index
@@ -176,6 +177,7 @@ bkfz                         # type keywords as usual; press Ctrl-S to search th
 - In the TUI, `Ctrl-S` (or `Alt-S`) re-runs the current query through semantic search; the prompt changes to `semantic>`. Typing returns to keyword search. If the server cannot be reached, the error is shown as the only line in the list.
 - What gets embedded: the issue summary plus the first 1,200 characters of its description, and document titles plus body text in 1,000-character chunks (at most 8 per document). Status, assignee and dates are not embedded.
 - The index grows by about 3KB per record (768-dimensional model). Changing `model` (or `dimensions`) requires `bkfz embed --rebuild`.
+- `bkfz --hybrid <query>` fuses the keyword and semantic rankings (records found by both come first). Set `tui_mode: hybrid` to make `Ctrl-S` use it; the default stays `semantic` because the two scored the same on our evaluation set.
 - Any OpenAI-compatible `/v1/embeddings` endpoint works (LM Studio, llama.cpp server, hosted APIs). For hosted APIs set `api_key_env` to the name of the environment variable holding the key. **Backlog content is sent to that server**, so check your organization's policy before pointing it outside your machine; bkfz prints a notice when the URL is not local.
 
 Optional keys and their defaults:
@@ -191,6 +193,7 @@ embedding:
   max_issue_chars: 1200
   chunk_chars: 1000
   max_chunks: 8
+  tui_mode: semantic       # what Ctrl-S runs: semantic | hybrid
 ```
 
 ## Known limitations

@@ -26,6 +26,14 @@ func TestBuildFzfArgs_SemanticOneShotBindings(t *testing.T) {
 	}
 }
 
+func TestBuildFzfArgs_SemanticPromptOverride(t *testing.T) {
+	args := buildFzfArgs(RunOptions{ReloadCmd: "r", SemanticCmd: "s", SemanticPrompt: "hybrid> "})
+	joined := strings.Join(args, "\x00")
+	if !strings.Contains(joined, "ctrl-s:reload(s)+change-prompt(hybrid> )") {
+		t.Errorf("prompt override missing: %v", args)
+	}
+}
+
 func TestBuildFzfArgs_SemanticHintWhenNotConfigured(t *testing.T) {
 	args := buildFzfArgs(RunOptions{
 		ReloadCmd:    "bkfz --list {q}",
