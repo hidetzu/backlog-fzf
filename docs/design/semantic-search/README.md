@@ -499,3 +499,17 @@ MVP（S2〜S9）を実装した際、設計から変えた点・補った点。
 | エラー本文の切り詰めがルーン境界を壊す | `[]rune` で切り詰め |
 | hash に `dimensions` を含めると「0 → ネイティブ値の明示」で全件再埋め込みになる | hash を `sha256(model \| text)` に変更。次元は `embedding_meta` で照合（§4.3 を更新） |
 | `DocumentsByIDs` と `scanDocuments` の重複 | **見送り**。`scanDocuments` が rowid を返さず、既存検索パスの改修が必要なため S13 以降で扱う |
+
+### 15.2 S10: 架空データでの評価セット（2026-10-13）
+
+`scripts/eval`（`make eval`）に、`scripts/demodata` の架空データ（19 issues ＋ 6 documents）に対する言い換えクエリ 22 件（期待レコードは「いずれか一致」で複数可）を同梱した。クエリは期待レコードの件名・タイトルと語を共有しないように書いてあり、同じクエリを FTS に通した結果も併記する。
+
+| 設定 | Recall@1 | Recall@5 | MRR | FTS のヒット |
+|---|---|---|---|---|
+| embeddinggemma 768（既定） | 0.95 | 1.00 | 0.98 | 0 / 22 |
+| embeddinggemma 256 | 0.95 | 0.95 | 0.96 | 0 / 22 |
+
+- 1 位を逃した 1 件は「フロントエンドのフレームワークを最新版に上げる」→ 期待 `WEB-115`（Upgrade React to v19）が 2 位（1 位は Android の起動クラッシュ修正。スコア差 0.002）。日英混在の抽象的なクエリは難しい。
+- 架空データの文書は短く chunk 分割が発生しない（vectors = records）ため、**chunk 集約の品質影響（Q4）はこのセットでは測れない**。長文の架空文書を足すのは今後の課題。
+- クエリ 1 件 29ms（M2 Max、ウォーム状態）。
+- `make eval ARGS="-min-recall5 0.9"` で退行ゲートとして使える（Recall@5 が閾値未満なら exit 1）。CI には組み込まない（embedding サーバが必要）。

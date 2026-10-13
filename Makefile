@@ -5,7 +5,7 @@ DEMO_DIR := tmp/demo
 VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -X main.version=$(VERSION)
 
-.PHONY: help build run test vet fmt lint tidy clean demo
+.PHONY: help build run test vet fmt lint tidy clean demo eval
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?##/ {printf "  %-8s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -34,6 +34,9 @@ tidy: ## go mod tidy
 demo: build ## Seed fictional data into $(DEMO_DIR) and record docs/demo.gif with VHS
 	go run ./scripts/demo-seed "$(abspath $(DEMO_DIR))"
 	BKFZ_DEMO_DIR="$(abspath $(DEMO_DIR))" PATH="$(CURDIR)/$(BIN_DIR):$$PATH" vhs docs/demo.tape
+
+eval: ## Score semantic search on the fictional demo data (needs a running embedding server; pass flags with ARGS="...")
+	go run ./scripts/eval $(ARGS)
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR) $(DEMO_DIR)
