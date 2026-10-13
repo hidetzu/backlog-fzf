@@ -94,6 +94,10 @@ bkfz preview <type> <KEY>     preview 出力
 bkfz url <type> <KEY>         URL を表示（type = issue | doc）
 bkfz url --copy <type> <KEY>  URL をクリップボードにコピー
 bkfz --list <query>           fzf reload 用出力
+bkfz --semantic <query>       非対話の意味検索（後述）
+bkfz embed                    意味検索インデックスの作成・更新
+bkfz embed --rebuild          全件を埋め込み直す（モデル変更後）
+bkfz sync --no-embed          意味検索インデックスを更新せずに同期
 bkfz version                  バージョン表示
 ```
 
@@ -104,6 +108,7 @@ bkfz version                  バージョン表示
 | `Enter` | ブラウザで開いて終了 |
 | `Ctrl-Y` | URL をクリップボードにコピー（TUI はそのまま） |
 | `Ctrl-O` | ブラウザで開く（TUI はそのまま） |
+| `Ctrl-S` / `Alt-S` | 今のクエリを意味検索で検索し直す（opt-in、後述） |
 | `Ctrl-/` | プレビューの表示切替 |
 | `Shift-↑` / `Shift-↓` | プレビューをスクロール |
 | `Esc` / `Ctrl-C` | 終了 |
@@ -140,6 +145,53 @@ $XDG_DATA_HOME/bkfz/index.db
 ```
 
 API キーは設定ファイルに保存せず、`BACKLOG_API_KEY` 環境変数から読み込みます。
+
+## 意味検索（任意）
+
+キーワード検索は、覚えている語がそのまま本文に含まれていないとヒットしません。「移行のあとログインできなくなった件があった気がする」のように内容だけ覚えている場合は、意味検索が意味の近さで探します。
+
+既定では無効で、設定に `embedding:` セクションを追加しない限り従来と同じ動作です。テキストの埋め込み（embedding）は別途動かすサーバが行い、既定はローカルの [Ollama](https://ollama.com) なのでデータは端末の外に出ません。
+
+```bash
+# 1) Ollama を入れて多言語 embedding モデルを取得（約 600MB）
+brew install ollama          # または https://ollama.com/download
+ollama pull embeddinggemma
+
+# 2) config.yaml で有効化（以下は既定値。model や base_url は変更可）
+cat >> ~/.config/bkfz/config.yaml <<'EOF'
+embedding:
+  base_url: http://localhost:11434/v1
+  model: embeddinggemma
+EOF
+
+# 3) 意味検索インデックスを作成（初回のみ。Apple Silicon Mac で約 10 件/秒）
+bkfz embed
+
+# 4) 意味で検索
+bkfz --semantic "クラウド移行後にログインできなくなった"
+bkfz                         # いつも通りキーワードを入力し、Ctrl-S で同じクエリを意味検索
+```
+
+- 以後は `bkfz sync` がインデックスを差分更新します（変更のあった記録だけ再埋め込み）。embedding サーバが止まっていても sync 自体は成功し、警告だけ表示します。
+- TUI では `Ctrl-S`（または `Alt-S`）で今のクエリを意味検索に掛け直し、プロンプトが `semantic>` に変わります。文字を打つとキーワード検索に戻ります。サーバに接続できない場合は、エラーが一覧の 1 行として表示されます。
+- 埋め込む内容: 課題は件名＋説明の先頭 1,200 文字、ドキュメントはタイトル＋本文を 1,000 文字ごとに分割したもの（1 文書あたり最大 8 個）。状態・担当者・日付は含めません。
+- インデックスは 1 記録あたり約 3KB 増えます（768 次元モデルの場合）。`model`（または `dimensions`）を変えたら `bkfz embed --rebuild` が必要です。
+- OpenAI 互換の `/v1/embeddings` を持つサーバならどれでも使えます（LM Studio、llama.cpp server、各社のクラウド API）。クラウド API では `api_key_env` にキーを持つ環境変数名を指定します。**Backlog の本文がそのサーバに送信される**ので、端末の外に向ける場合は組織のポリシーを確認してください。URL がローカルでない場合、bkfz は実行時にその旨を表示します。
+
+省略可能なキーと既定値:
+
+```yaml
+embedding:
+  base_url: http://localhost:11434/v1
+  model: embeddinggemma
+  dimensions: 0            # 0 = モデルのネイティブ次元。小さくすると（Matryoshka 対応モデル）インデックスは縮むが品質は落ちる
+  api_key_env: ""          # 例: OPENAI_API_KEY
+  query_prefix: "task: search result | query: "   # EmbeddingGemma のクエリ指示。指示のないモデルでは "" に
+  document_prefix: ""      # e5 系なら "passage: " など
+  max_issue_chars: 1200
+  chunk_chars: 1000
+  max_chunks: 8
+```
 
 ## 既知の制限
 

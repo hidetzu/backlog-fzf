@@ -94,6 +94,10 @@ bkfz preview <type> <KEY>     Preview output
 bkfz url <type> <KEY>         Print the URL (type = issue | doc)
 bkfz url --copy <type> <KEY>  Copy the URL to the clipboard
 bkfz --list <query>           List output for fzf reload
+bkfz --semantic <query>       Non-interactive semantic search (see below)
+bkfz embed                    Build / update the semantic index
+bkfz embed --rebuild          Re-embed everything (after changing the model)
+bkfz sync --no-embed          Sync without touching the semantic index
 bkfz version                  Print version
 ```
 
@@ -104,6 +108,7 @@ bkfz version                  Print version
 | `Enter` | Open in the browser and exit |
 | `Ctrl-Y` | Copy the URL to the clipboard (stay in the TUI) |
 | `Ctrl-O` | Open in the browser (stay in the TUI) |
+| `Ctrl-S` / `Alt-S` | Re-run the current query as a semantic search (opt-in, see below) |
 | `Ctrl-/` | Toggle the preview |
 | `Shift-↑` / `Shift-↓` | Scroll the preview |
 | `Esc` / `Ctrl-C` | Quit |
@@ -140,6 +145,53 @@ $XDG_DATA_HOME/bkfz/index.db
 ```
 
 The API key is not stored in the config; it is read from the `BACKLOG_API_KEY` environment variable.
+
+## Semantic search (optional)
+
+Keyword search needs the words you remember to appear in the record. When you only remember *what it was about* ("there was an issue where login broke after the migration..."), semantic search finds records by meaning instead.
+
+It is off by default. Nothing changes for you unless you add an `embedding:` section to the config. Text is embedded by a separate server that you run; the default is a local [Ollama](https://ollama.com), so nothing leaves your machine.
+
+```bash
+# 1) Install Ollama and pull a multilingual embedding model (~600MB)
+brew install ollama          # or https://ollama.com/download
+ollama pull embeddinggemma
+
+# 2) Enable it in config.yaml (these are the defaults; model and base_url can be changed)
+cat >> ~/.config/bkfz/config.yaml <<'EOF'
+embedding:
+  base_url: http://localhost:11434/v1
+  model: embeddinggemma
+EOF
+
+# 3) Build the semantic index (one-off; about 10 records/s on an Apple Silicon Mac)
+bkfz embed
+
+# 4) Search by meaning
+bkfz --semantic "login stopped working after moving to the cloud"
+bkfz                         # type keywords as usual; press Ctrl-S to search the same query by meaning
+```
+
+- `bkfz sync` keeps the semantic index up to date afterwards (only changed records are re-embedded). If the embedding server is down, sync still succeeds and prints a warning.
+- In the TUI, `Ctrl-S` (or `Alt-S`) re-runs the current query through semantic search; the prompt changes to `semantic>`. Typing returns to keyword search. If the server cannot be reached, the error is shown as the only line in the list.
+- What gets embedded: the issue summary plus the first 1,200 characters of its description, and document titles plus body text in 1,000-character chunks (at most 8 per document). Status, assignee and dates are not embedded.
+- The index grows by about 3KB per record (768-dimensional model). Changing `model` (or `dimensions`) requires `bkfz embed --rebuild`.
+- Any OpenAI-compatible `/v1/embeddings` endpoint works (LM Studio, llama.cpp server, hosted APIs). For hosted APIs set `api_key_env` to the name of the environment variable holding the key. **Backlog content is sent to that server**, so check your organization's policy before pointing it outside your machine; bkfz prints a notice when the URL is not local.
+
+Optional keys and their defaults:
+
+```yaml
+embedding:
+  base_url: http://localhost:11434/v1
+  model: embeddinggemma
+  dimensions: 0            # 0 = model native. Smaller values (Matryoshka models) shrink the index but reduce quality
+  api_key_env: ""          # e.g. OPENAI_API_KEY
+  query_prefix: "task: search result | query: "   # EmbeddingGemma's query instruction; set "" for models without one
+  document_prefix: ""      # e.g. "passage: " for e5-style models
+  max_issue_chars: 1200
+  chunk_chars: 1000
+  max_chunks: 8
+```
 
 ## Known limitations
 
