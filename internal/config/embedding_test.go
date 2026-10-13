@@ -58,6 +58,9 @@ func TestLoad_EmbeddingAppliesDefaults(t *testing.T) {
 	if !e.IsLocal() {
 		t.Error("default base_url should be local")
 	}
+	if e.TUIMode != TUIModeSemantic {
+		t.Errorf("TUIMode default = %q", e.TUIMode)
+	}
 }
 
 func TestLoad_EmbeddingExplicitEmptyPrefixIsKept(t *testing.T) {
@@ -79,6 +82,7 @@ func TestLoad_EmbeddingRejectsInvalidValues(t *testing.T) {
 		"bad url":       "embedding:\n  base_url: localhost:11434\n",
 		"negative dims": "embedding:\n  dimensions: -1\n",
 		"blank model":   "embedding:\n  model: \"  \"\n",
+		"bad tui_mode":  "embedding:\n  tui_mode: fuzzy\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

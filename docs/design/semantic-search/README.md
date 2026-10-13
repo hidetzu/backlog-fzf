@@ -513,3 +513,21 @@ MVP（S2〜S9）を実装した際、設計から変えた点・補った点。
 - 架空データの文書は短く chunk 分割が発生しない（vectors = records）ため、**chunk 集約の品質影響（Q4）はこのセットでは測れない**。長文の架空文書を足すのは今後の課題。
 - クエリ 1 件 29ms（M2 Max、ウォーム状態）。
 - `make eval ARGS="-min-recall5 0.9"` で退行ゲートとして使える（Recall@5 が閾値未満なら exit 1）。CI には組み込まない（embedding サーバが必要）。
+
+### 15.3 S11: hybrid（RRF）の実装と比較（2026-10-13）
+
+- `internal/search` に Keyword / Semantic / Hybrid を集約し、CLI・TUI・評価コマンドが同じ `Hit` 型を使うようにした（レビュー指摘にあった `recentLines` 系の重複もここで解消）。
+- Hybrid は Keyword（updated_at 順）と Semantic（cosine 順）の各 limit 件を RRF（k=60）で融合する。両方の一覧に出た記録が最上位に来る。
+- `bkfz --hybrid`、`--list --hybrid`、`embedding.tui_mode: hybrid`（ctrl-s の動作を切替）を追加。
+
+評価（`make eval`、embeddinggemma 768 次元）:
+
+| セット | semantic R@1 / R@5 / MRR | hybrid R@1 / R@5 / MRR | FTS が期待レコードを返した数 |
+|---|---|---|---|
+| paraphrase 22 件 | 0.95 / 1.00 / 0.98 | 0.95 / 1.00 / 0.98 | 0 / 22 |
+| partial 12 件（固有名詞＋言い換え） | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1 / 12 |
+
+- 実 index（17,949 ベクトル）でも、固有名詞を含むクエリ 4 件で semantic と hybrid の上位 3 件が一致した。
+- **判断（Q1 の決着）**: hybrid は提供するが ctrl-s の既定は semantic のまま。理由は、(1) 測定上の差がない、(2) semantic は FTS を呼ばない分だけ単純、(3) 差が出るのは「semantic が外し FTS が当てる」場合（256 次元で見られた固有名詞の取りこぼし等）で、その時はユーザーが `tui_mode: hybrid` に切り替えられる。
+- 評価の avg query は、同じクエリ文字列を 2 回目に投げる hybrid 側が Ollama のプロンプトキャッシュで速く見える（28ms vs 150〜340ms）ため、モード間の比較には使えない。
+- 架空データの FTS が partial セットでも 1/12 しか返さないのは、bigram ＋ LIKE 後置フィルタが「全語の部分一致」を要求するため（「PKCE を入れたい」の「を入れたい」が本文に無い）。hybrid が FTS 側から得るものが小さい一因でもある。

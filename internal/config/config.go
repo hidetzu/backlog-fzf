@@ -40,7 +40,16 @@ type Embedding struct {
 	MaxIssueChars  int     `yaml:"max_issue_chars,omitempty"` // description runes embedded per issue
 	ChunkChars     int     `yaml:"chunk_chars,omitempty"`     // document chunk size in runes
 	MaxChunks      int     `yaml:"max_chunks,omitempty"`      // chunks embedded per document
+	// TUIMode selects what Ctrl-S runs: "semantic" (default) or "hybrid"
+	// (keyword + semantic fused with Reciprocal Rank Fusion).
+	TUIMode string `yaml:"tui_mode,omitempty"`
 }
+
+// TUI modes accepted by Embedding.TUIMode.
+const (
+	TUIModeSemantic = "semantic"
+	TUIModeHybrid   = "hybrid"
+)
 
 // Embedding defaults. The prefixes follow the EmbeddingGemma model card
 // ("task: search result | query: ..." for queries, none for documents).
@@ -84,6 +93,9 @@ func (e Embedding) WithDefaults() Embedding {
 	if e.MaxChunks == 0 {
 		e.MaxChunks = DefaultEmbeddingMaxChunks
 	}
+	if e.TUIMode == "" {
+		e.TUIMode = TUIModeSemantic
+	}
 	return e
 }
 
@@ -102,6 +114,9 @@ func (e Embedding) Validate() error {
 	}
 	if e.MaxIssueChars < 0 || e.ChunkChars < 0 || e.MaxChunks < 0 {
 		return errors.New("config: embedding.max_issue_chars / chunk_chars / max_chunks must be >= 0")
+	}
+	if e.TUIMode != TUIModeSemantic && e.TUIMode != TUIModeHybrid {
+		return fmt.Errorf("config: embedding.tui_mode must be %q or %q, got %q", TUIModeSemantic, TUIModeHybrid, e.TUIMode)
 	}
 	return nil
 }

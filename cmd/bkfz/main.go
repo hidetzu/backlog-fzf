@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -22,6 +21,7 @@ import (
 	"github.com/hidetzu/backlog-fzf/internal/config"
 	"github.com/hidetzu/backlog-fzf/internal/embed"
 	"github.com/hidetzu/backlog-fzf/internal/index"
+	"github.com/hidetzu/backlog-fzf/internal/search"
 	"github.com/hidetzu/backlog-fzf/internal/syncer"
 	"github.com/hidetzu/backlog-fzf/internal/tui"
 )
@@ -48,6 +48,7 @@ Usage:
   bkfz                       Interactive fuzzy search (default)
   bkfz <query>               Non-interactive search across issues and documents
   bkfz --semantic <query>    Non-interactive semantic search (requires an embedding: config section)
+  bkfz --hybrid <query>      Keyword + semantic search fused with Reciprocal Rank Fusion
   bkfz init                  Create config scaffold and register API key
   bkfz sync [flags]          Sync issues + documents from Backlog into local index
   bkfz embed [--rebuild]     Build or update the semantic index (embedding: config section)
@@ -57,7 +58,7 @@ Usage:
   bkfz preview <type> <KEY>  Print preview text (used by fzf --preview)
   bkfz url [--copy] <type> <KEY>
                              Print (or copy to clipboard) the URL of an issue|doc
-  bkfz --list [--semantic] <query>
+  bkfz --list [--semantic|--hybrid] <query>
                              Emit list lines for fzf change:reload
   bkfz --action <copy|open> <type> <KEY>
                              Run a TUI key action and print a status line (fzf transform-header)
@@ -111,6 +112,8 @@ func run(ctx context.Context, args []string) error {
 		return runEmbed(ctx, args[1:])
 	case "--semantic":
 		return runSemantic(ctx, args[1:])
+	case "--hybrid":
+		return runHybrid(ctx, args[1:])
 	case "open":
 		return runOpen(ctx, args[1:])
 	case "preview":
@@ -142,7 +145,7 @@ func runTUI(ctx context.Context) error {
 	if err != nil {
 		exe = "bkfz" // on failure, fall back to "bkfz" resolved via PATH
 	}
-	selected, err := tui.Run(ctx, tuiOptions(shellQuote(exe), cfg.Embedding != nil))
+	selected, err := tui.Run(ctx, tuiOptions(shellQuote(exe), tuiMode(cfg)))
 	if err != nil {
 		if errors.Is(err, tui.ErrFzfNotFound) {
 			return fzfMissingError()
@@ -194,18 +197,29 @@ func resolveVersion(ldflagsVersion string, info *debug.BuildInfo) string {
 // an embedding: config section.
 const semanticHint = "semantic search is not configured; add an embedding: section to config.yaml (see README)"
 
+// tuiMode returns the ctrl-s mode ("semantic" / "hybrid") or "" when
+// semantic search is not configured.
+func tuiMode(cfg *config.Config) string {
+	if cfg.Embedding == nil {
+		return ""
+	}
+	return cfg.Embedding.TUIMode
+}
+
 // tuiOptions returns the fzf wiring for the TUI. q is the shell-quoted
-// path of this executable; every action calls back into bkfz. semantic
-// enables the ctrl-s one-shot semantic search binding.
-func tuiOptions(q string, semantic bool) tui.RunOptions {
+// path of this executable; every action calls back into bkfz. mode is
+// the ctrl-s one-shot search mode ("semantic" / "hybrid"), or "" to show
+// the setup hint instead.
+func tuiOptions(q string, mode string) tui.RunOptions {
 	opts := tui.RunOptions{
 		ReloadCmd:  q + " --list {q}",
 		PreviewCmd: q + " preview {1} {2}",
 		CopyCmd:    q + " --action copy {1} {2}",
 		OpenCmd:    q + " --action open {1} {2}",
 	}
-	if semantic {
-		opts.SemanticCmd = q + " --list --semantic {q}"
+	if mode != "" {
+		opts.SemanticCmd = q + " --list --" + mode + " {q}"
+		opts.SemanticPrompt = mode + "> "
 	} else {
 		opts.SemanticHint = semanticHint
 	}
@@ -667,20 +681,21 @@ func isTerminal(f *os.File) bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// runSearch and runList share the same implementation, differing only in limit.
+// runSearch is `bkfz <query>`: the keyword path, like --list with a smaller limit.
 func runSearch(ctx context.Context, args []string) error {
-	return search(ctx, strings.Join(args, " "), 50)
+	return keywordSearch(ctx, strings.Join(args, " "), 50)
 }
 
-// runList emits list lines for fzf. A leading --semantic switches to the
-// semantic search path; that path never fails the process because fzf
-// shows nothing of stderr — errors become a pseudo line instead.
+// runList emits list lines for fzf. A leading --semantic / --hybrid
+// switches to the embedding-backed search path; that path never fails
+// the process because fzf shows nothing of stderr — errors become a
+// pseudo line instead.
 func runList(ctx context.Context, args []string) error {
-	semantic, query := splitSemanticFlag(args)
-	if !semantic {
-		return search(ctx, query, 100)
+	mode, query := splitModeFlag(args)
+	if mode == "" {
+		return keywordSearch(ctx, query, 100)
 	}
-	lines, err := semanticSearch(ctx, query, 100)
+	lines, err := modeSearch(ctx, mode, query, 100)
 	if err != nil {
 		fmt.Println(errorLine(err))
 		return nil
@@ -693,11 +708,20 @@ func runList(ctx context.Context, args []string) error {
 
 // runSemantic is `bkfz --semantic <query>`: non-interactive semantic search.
 func runSemantic(ctx context.Context, args []string) error {
+	return runModeSearch(ctx, config.TUIModeSemantic, args)
+}
+
+// runHybrid is `bkfz --hybrid <query>`: keyword + semantic, fused.
+func runHybrid(ctx context.Context, args []string) error {
+	return runModeSearch(ctx, config.TUIModeHybrid, args)
+}
+
+func runModeSearch(ctx context.Context, mode string, args []string) error {
 	query := strings.TrimSpace(strings.Join(args, " "))
 	if query == "" {
-		return errors.New("--semantic: QUERY required\n\n  bkfz --semantic <query>")
+		return fmt.Errorf("--%s: QUERY required\n\n  bkfz --%s <query>", mode, mode)
 	}
-	lines, err := semanticSearch(ctx, query, 50)
+	lines, err := modeSearch(ctx, mode, query, 50)
 	if err != nil {
 		return err
 	}
@@ -707,13 +731,19 @@ func runSemantic(ctx context.Context, args []string) error {
 	return nil
 }
 
-// splitSemanticFlag strips a leading --semantic from --list arguments and
-// joins the rest into the query.
-func splitSemanticFlag(args []string) (semantic bool, query string) {
-	if len(args) > 0 && args[0] == "--semantic" {
-		return true, strings.Join(args[1:], " ")
+// splitModeFlag strips a leading --semantic / --hybrid from --list
+// arguments and joins the rest into the query. mode is "" for the
+// keyword path.
+func splitModeFlag(args []string) (mode, query string) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "--semantic":
+			return config.TUIModeSemantic, strings.Join(args[1:], " ")
+		case "--hybrid":
+			return config.TUIModeHybrid, strings.Join(args[1:], " ")
+		}
 	}
-	return false, strings.Join(args, " ")
+	return "", strings.Join(args, " ")
 }
 
 // errorLine formats an error as a list line fzf can display. The column
@@ -727,11 +757,11 @@ func errorLine(err error) string {
 	return fmt.Sprintf("%s\t-\t-\t-\t✗ %s\t-", kindError, oneLine(msg))
 }
 
-// semanticSearch embeds the query and returns formatted list lines in
-// descending similarity order (issues and documents share one ranking).
-// An empty query returns the most recently updated records, like the
-// FTS path, without contacting the embedding server.
-func semanticSearch(ctx context.Context, query string, limit int) ([]string, error) {
+// modeSearch runs the semantic or hybrid search and returns formatted
+// list lines, best first (issues and documents share one ranking). An
+// empty query returns the most recently updated records, like the FTS
+// path, without contacting the embedding server.
+func modeSearch(ctx context.Context, mode, query string, limit int) ([]string, error) {
 	cfg, err := loadConfigOrInitHint()
 	if err != nil {
 		return nil, err
@@ -746,143 +776,69 @@ func semanticSearch(ctx context.Context, query string, limit int) ([]string, err
 	defer db.Close()
 	client := newEmbedClient(cfg.Embedding)
 	client.Retries = -1 // a query is interactive: a down server must fail fast
-	lines, err := semanticLines(ctx, db, client, cfg.Embedding, query, limit)
+	lines, err := modeLines(ctx, db, client, cfg.Embedding, mode, query, limit)
 	if err != nil {
 		return nil, embedServerError(cfg.Embedding, err)
 	}
 	return lines, nil
 }
 
-// errSemanticNotBuilt is returned before any HTTP call when `bkfz embed`
-// has never completed.
-var errSemanticNotBuilt = errors.New("semantic index not built; run: bkfz embed")
+// errSemanticNotBuilt / errSemanticRebuild are search's sentinels, kept
+// under local names for the error-mapping tests.
+var (
+	errSemanticNotBuilt = search.ErrNotBuilt
+	errSemanticRebuild  = search.ErrRebuild
+)
 
-// errSemanticRebuild is returned when the index was built with a different
-// model / dimension count than the current config.
-var errSemanticRebuild = errors.New("semantic index was built with a different model or dimensions; run: bkfz embed --rebuild")
-
-// semanticLines is the testable core of semanticSearch.
+// semanticLines is modeLines for the semantic mode (kept for tests).
 func semanticLines(ctx context.Context, db *index.DB, embedder embed.Embedder, ec *config.Embedding, query string, limit int) ([]string, error) {
-	meta, err := db.EmbeddingMeta(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if meta == nil {
-		return nil, errSemanticNotBuilt
-	}
-	if !meta.Compatible(ec.Model, ec.Dimensions) {
-		return nil, errSemanticRebuild
-	}
-	if strings.TrimSpace(query) == "" {
-		// Mirror search(""): most recently updated records, no HTTP call.
-		return searchLines(ctx, db, "", limit)
-	}
-	vecs, err := embedder.Embed(ctx, []string{derefString(ec.QueryPrefix) + query})
-	if err != nil {
-		return nil, err
-	}
-	if len(vecs) != 1 {
-		return nil, fmt.Errorf("embedding server returned %d vectors for the query", len(vecs))
-	}
-	q := vecs[0]
-	index.NormalizeVector(q)
-	hits, err := db.SearchVectors(ctx, q, limit)
-	if err != nil {
-		if errors.Is(err, index.ErrDimensionMismatch) {
-			return nil, errSemanticRebuild
-		}
-		return nil, err
-	}
-	var issueIDs, docIDs []int64
-	for _, h := range hits {
-		switch h.Kind {
-		case index.KindIssue:
-			issueIDs = append(issueIDs, h.RefID)
-		case index.KindDocument:
-			docIDs = append(docIDs, h.RefID)
-		}
-	}
-	issues, err := db.IssuesByIDs(ctx, issueIDs)
-	if err != nil {
-		return nil, err
-	}
-	docs, err := db.DocumentsByIDs(ctx, docIDs)
-	if err != nil {
-		return nil, err
-	}
-	lines := make([]string, 0, len(hits))
-	for _, h := range hits {
-		switch h.Kind {
-		case index.KindIssue:
-			if i, ok := issues[h.RefID]; ok {
-				lines = append(lines, formatIssueLine(i))
-			}
-		case index.KindDocument:
-			if d, ok := docs[h.RefID]; ok {
-				lines = append(lines, formatDocumentLine(d))
-			}
-		}
-	}
-	return lines, nil
+	return modeLines(ctx, db, embedder, ec, config.TUIModeSemantic, query, limit)
 }
 
-// search collects matches from both issues and documents, merges them in
-// updated_at DESC order, and prints up to `limit` rows on stdout.
+// modeLines is the testable core of modeSearch.
+func modeLines(ctx context.Context, db *index.DB, embedder embed.Embedder, ec *config.Embedding, mode, query string, limit int) ([]string, error) {
+	var hits []search.Hit
+	var err error
+	switch mode {
+	case config.TUIModeHybrid:
+		hits, err = search.Hybrid(ctx, db, embedder, ec, query, limit)
+	default:
+		hits, err = search.Semantic(ctx, db, embedder, ec, query, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return formatHits(hits), nil
+}
+
+// keywordSearch is `bkfz <query>` / `bkfz --list <query>`: the FTS path.
 // Cross-type filtering from a single query is backlog-fzf's core concept.
-func search(ctx context.Context, query string, limit int) error {
+func keywordSearch(ctx context.Context, query string, limit int) error {
 	db, err := openIndexDB()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	lines, err := searchLines(ctx, db, query, limit)
+	hits, err := search.Keyword(ctx, db, query, limit)
 	if err != nil {
 		return err
 	}
-	for _, line := range lines {
+	for _, line := range formatHits(hits) {
 		fmt.Println(line)
 	}
 	return nil
 }
 
-// searchLines runs the keyword search over issues and documents and
-// returns the merged list lines (an empty query lists recent records).
-func searchLines(ctx context.Context, db *index.DB, query string, limit int) ([]string, error) {
-	issues, err := db.SearchIssues(ctx, query, limit)
-	if err != nil {
-		return nil, err
-	}
-	docs, err := db.SearchDocuments(ctx, query, limit)
-	if err != nil {
-		return nil, err
-	}
-	return mergeByUpdated(issues, docs, limit), nil
-}
-
-// mergeByUpdated formats issues and documents as list lines ordered by
-// updated_at DESC, keeping at most limit lines.
-func mergeByUpdated(issues []backlog.Issue, docs []backlog.Document, limit int) []string {
-	type entry struct {
-		line string
-		ts   time.Time
-	}
-	entries := make([]entry, 0, len(issues)+len(docs))
-	for _, i := range issues {
-		entries = append(entries, entry{formatIssueLine(i), i.UpdatedAt})
-	}
-	for _, d := range docs {
-		entries = append(entries, entry{formatDocumentLine(d), d.UpdatedAt})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].ts.After(entries[j].ts)
-	})
-	if len(entries) > limit {
-		entries = entries[:limit]
-	}
-	lines := make([]string, len(entries))
-	for i, e := range entries {
-		lines[i] = e.line
+// formatHits renders hits as list lines in the given order.
+func formatHits(hits []search.Hit) []string {
+	lines := make([]string, len(hits))
+	for i, h := range hits {
+		if h.Kind == index.KindIssue {
+			lines[i] = formatIssueLine(h.Issue)
+		} else {
+			lines[i] = formatDocumentLine(h.Document)
+		}
 	}
 	return lines
 }

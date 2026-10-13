@@ -32,6 +32,9 @@ type RunOptions struct {
 	// re-run through semantic search and the prompt changes to
 	// "semantic> " until the next keystroke returns to ReloadCmd.
 	SemanticCmd string
+	// SemanticPrompt replaces the prompt while SemanticCmd's results are
+	// shown (default "semantic> "); the hybrid mode uses "hybrid> ".
+	SemanticPrompt string
 	// SemanticHint, when SemanticCmd is empty, is shown in the header on
 	// ctrl-s / alt-s so the keys are discoverable even when the feature is
 	// not configured.
@@ -141,7 +144,11 @@ func buildFzfArgs(opts RunOptions) []string {
 		args = append(args, "--bind", "ctrl-o:transform-header("+opts.OpenCmd+")")
 	}
 	if opts.SemanticCmd != "" {
-		action := "reload(" + opts.SemanticCmd + ")+change-prompt(semantic> )"
+		prompt := opts.SemanticPrompt
+		if prompt == "" {
+			prompt = "semantic> "
+		}
+		action := "reload(" + opts.SemanticCmd + ")+change-prompt(" + prompt + ")"
 		if header != "" {
 			action += "+change-header:" + header // colon form: must stay last
 		}

@@ -51,3 +51,22 @@ var cases = []evalCase{
 	// English query against Japanese records (cross-lingual).
 	{"users cannot sign in with single sign-on", []string{issue("WEB-142")}},
 }
+
+// partialCases are queries where the user remembers one exact term (a
+// product name, an acronym, an error code) plus a vague description.
+// The keyword path can find these; the question is whether fusing it
+// with the semantic ranking (hybrid) beats semantic alone.
+var partialCases = []evalCase{
+	{"Safari の認証が通らない", []string{issue("WEB-142")}},
+	{"SameSite が原因っぽい件", []string{issue("WEB-142")}},
+	{"PKCE を入れたい", []string{issue("API-85")}},
+	{"Postgres を上げる作業", []string{issue("OPS-55")}},
+	{"React のメジャーアップデート", []string{issue("WEB-115")}},
+	{"cert-manager で更新を自動化", []string{issue("OPS-49")}},
+	{"FCM の通知が重複", []string{issue("APP-33")}},
+	{"OFFSET が遅い問題", []string{issue("WEB-120")}},
+	{"SPF の設定漏れ", []string{issue("WEB-131")}},
+	{"429 のときのヘッダ", []string{issue("API-80")}},
+	{"ECS へのデプロイ自動化", []string{issue("OPS-57"), doc(docDeployGuide)}},
+	{"RFC 7807 のエラー形式", []string{doc(docAPIGuide)}},
+}
