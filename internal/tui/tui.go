@@ -27,7 +27,20 @@ type RunOptions struct {
 	// query changes.
 	CopyCmd string
 	OpenCmd string
+	// SemanticCmd, when set, is bound to ctrl-s / alt-s as a one-shot
+	// reload (e.g. "bkfz --list --semantic {q}"): the current query is
+	// re-run through semantic search and the prompt changes to
+	// "semantic> " until the next keystroke returns to ReloadCmd.
+	SemanticCmd string
+	// SemanticHint, when SemanticCmd is empty, is shown in the header on
+	// ctrl-s / alt-s so the keys are discoverable even when the feature is
+	// not configured.
+	SemanticHint string
 }
+
+// semanticKeys are the keys bound to SemanticCmd. alt-s is a fallback for
+// terminals where ctrl-s is swallowed by XON/XOFF flow control.
+var semanticKeys = []string{"ctrl-s", "alt-s"}
 
 // MinFzfVersion is the oldest fzf that supports every action used here
 // (transform-header / change-header were added in 0.40.0).
@@ -105,6 +118,11 @@ func buildFzfArgs(opts RunOptions) []string {
 	}
 	if opts.ReloadCmd != "" {
 		change := "change:reload(" + opts.ReloadCmd + ")"
+		if opts.SemanticCmd != "" {
+			// Typing after a one-shot semantic search returns to the
+			// regular prompt.
+			change += "+change-prompt(> )"
+		}
 		if header != "" {
 			// Restore the key help after a ctrl-y / ctrl-o status message.
 			// The colon form must come last; it takes the rest of the string.
@@ -122,6 +140,19 @@ func buildFzfArgs(opts RunOptions) []string {
 	if opts.OpenCmd != "" {
 		args = append(args, "--bind", "ctrl-o:transform-header("+opts.OpenCmd+")")
 	}
+	if opts.SemanticCmd != "" {
+		action := "reload(" + opts.SemanticCmd + ")+change-prompt(semantic> )"
+		if header != "" {
+			action += "+change-header:" + header // colon form: must stay last
+		}
+		for _, key := range semanticKeys {
+			args = append(args, "--bind", key+":"+action)
+		}
+	} else if opts.SemanticHint != "" {
+		for _, key := range semanticKeys {
+			args = append(args, "--bind", key+":change-header("+opts.SemanticHint+")")
+		}
+	}
 	if opts.InitialQuery != "" {
 		args = append(args, "--query", opts.InitialQuery)
 	}
@@ -138,6 +169,9 @@ func headerText(opts RunOptions) string {
 	}
 	if opts.OpenCmd != "" {
 		keys = append(keys, "ctrl-o: open (stay)")
+	}
+	if opts.SemanticCmd != "" {
+		keys = append(keys, "ctrl-s: semantic")
 	}
 	if opts.PreviewCmd != "" {
 		keys = append(keys, "ctrl-/: preview")
