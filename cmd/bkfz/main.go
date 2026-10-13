@@ -37,6 +37,9 @@ var version string
 const (
 	kindIssue    = "issue"
 	kindDocument = "doc"
+	// kindError marks a pseudo line that carries an error message into the
+	// fzf list (stderr would corrupt the screen). Enter on it does nothing.
+	kindError = "error"
 )
 
 const usage = `bkfz - cross-project fuzzy search for Backlog
@@ -44,6 +47,7 @@ const usage = `bkfz - cross-project fuzzy search for Backlog
 Usage:
   bkfz                       Interactive fuzzy search (default)
   bkfz <query>               Non-interactive search across issues and documents
+  bkfz --semantic <query>    Non-interactive semantic search (requires an embedding: config section)
   bkfz init                  Create config scaffold and register API key
   bkfz sync [flags]          Sync issues + documents from Backlog into local index
   bkfz embed [--rebuild]     Build or update the semantic index (embedding: config section)
@@ -53,7 +57,8 @@ Usage:
   bkfz preview <type> <KEY>  Print preview text (used by fzf --preview)
   bkfz url [--copy] <type> <KEY>
                              Print (or copy to clipboard) the URL of an issue|doc
-  bkfz --list <query>        Emit list lines for fzf change:reload
+  bkfz --list [--semantic] <query>
+                             Emit list lines for fzf change:reload
   bkfz --action <copy|open> <type> <KEY>
                              Run a TUI key action and print a status line (fzf transform-header)
   bkfz version               Print version
@@ -104,6 +109,8 @@ func run(ctx context.Context, args []string) error {
 		return runSync(ctx, args[1:])
 	case "embed":
 		return runEmbed(ctx, args[1:])
+	case "--semantic":
+		return runSemantic(ctx, args[1:])
 	case "open":
 		return runOpen(ctx, args[1:])
 	case "preview":
@@ -654,8 +661,158 @@ func runSearch(ctx context.Context, args []string) error {
 	return search(ctx, strings.Join(args, " "), 50)
 }
 
+// runList emits list lines for fzf. A leading --semantic switches to the
+// semantic search path; that path never fails the process because fzf
+// shows nothing of stderr — errors become a pseudo line instead.
 func runList(ctx context.Context, args []string) error {
-	return search(ctx, strings.Join(args, " "), 100)
+	semantic, query := splitSemanticFlag(args)
+	if !semantic {
+		return search(ctx, query, 100)
+	}
+	lines, err := semanticSearch(ctx, query, 100)
+	if err != nil {
+		fmt.Println(errorLine(err))
+		return nil
+	}
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	return nil
+}
+
+// runSemantic is `bkfz --semantic <query>`: non-interactive semantic search.
+func runSemantic(ctx context.Context, args []string) error {
+	query := strings.TrimSpace(strings.Join(args, " "))
+	if query == "" {
+		return errors.New("--semantic: QUERY required\n\n  bkfz --semantic <query>")
+	}
+	lines, err := semanticSearch(ctx, query, 50)
+	if err != nil {
+		return err
+	}
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	return nil
+}
+
+// splitSemanticFlag strips a leading --semantic from --list arguments and
+// joins the rest into the query.
+func splitSemanticFlag(args []string) (semantic bool, query string) {
+	if len(args) > 0 && args[0] == "--semantic" {
+		return true, strings.Join(args[1:], " ")
+	}
+	return false, strings.Join(args, " ")
+}
+
+// errorLine formats an error as a list line fzf can display. The column
+// layout matches formatIssueLine so {1}/{2} stay stable.
+func errorLine(err error) string {
+	msg := err.Error()
+	var he *hintedError
+	if errors.As(err, &he) {
+		msg = he.err.Error() + " (see README)"
+	}
+	return fmt.Sprintf("%s\t-\t-\t-\t✗ %s\t-", kindError, oneLine(msg))
+}
+
+// semanticSearch embeds the query and returns formatted list lines in
+// descending similarity order (issues and documents share one ranking).
+// An empty query returns the most recently updated records, like the
+// FTS path, without contacting the embedding server.
+func semanticSearch(ctx context.Context, query string, limit int) ([]string, error) {
+	cfg, err := loadConfigOrInitHint()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Embedding == nil {
+		return nil, errors.New(semanticHint)
+	}
+	db, err := openIndexDB()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	client := newEmbedClient(cfg.Embedding)
+	client.Retries = -1 // a query is interactive: a down server must fail fast
+	lines, err := semanticLines(ctx, db, client, cfg.Embedding, query, limit)
+	if err != nil {
+		return nil, embedServerError(cfg.Embedding, err)
+	}
+	return lines, nil
+}
+
+// errSemanticNotBuilt is returned before any HTTP call when `bkfz embed`
+// has never completed.
+var errSemanticNotBuilt = errors.New("semantic index not built; run: bkfz embed")
+
+// errSemanticRebuild is returned when the index was built with a different
+// model / dimension count than the current config.
+var errSemanticRebuild = errors.New("semantic index was built with a different model or dimensions; run: bkfz embed --rebuild")
+
+// semanticLines is the testable core of semanticSearch.
+func semanticLines(ctx context.Context, db *index.DB, embedder embed.Embedder, ec *config.Embedding, query string, limit int) ([]string, error) {
+	meta, err := db.EmbeddingMeta(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if meta == nil {
+		return nil, errSemanticNotBuilt
+	}
+	if !meta.Compatible(ec.Model, ec.Dimensions) {
+		return nil, errSemanticRebuild
+	}
+	if strings.TrimSpace(query) == "" {
+		// Mirror search(""): most recently updated records, no HTTP call.
+		return searchLines(ctx, db, "", limit)
+	}
+	vecs, err := embedder.Embed(ctx, []string{derefString(ec.QueryPrefix) + query})
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) != 1 {
+		return nil, fmt.Errorf("embedding server returned %d vectors for the query", len(vecs))
+	}
+	q := vecs[0]
+	index.NormalizeVector(q)
+	hits, err := db.SearchVectors(ctx, q, limit)
+	if err != nil {
+		if errors.Is(err, index.ErrDimensionMismatch) {
+			return nil, errSemanticRebuild
+		}
+		return nil, err
+	}
+	var issueIDs, docIDs []int64
+	for _, h := range hits {
+		switch h.Kind {
+		case index.KindIssue:
+			issueIDs = append(issueIDs, h.RefID)
+		case index.KindDocument:
+			docIDs = append(docIDs, h.RefID)
+		}
+	}
+	issues, err := db.IssuesByIDs(ctx, issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	docs, err := db.DocumentsByIDs(ctx, docIDs)
+	if err != nil {
+		return nil, err
+	}
+	lines := make([]string, 0, len(hits))
+	for _, h := range hits {
+		switch h.Kind {
+		case index.KindIssue:
+			if i, ok := issues[h.RefID]; ok {
+				lines = append(lines, formatIssueLine(i))
+			}
+		case index.KindDocument:
+			if d, ok := docs[h.RefID]; ok {
+				lines = append(lines, formatDocumentLine(d))
+			}
+		}
+	}
+	return lines, nil
 }
 
 // search collects matches from both issues and documents, merges them in
@@ -668,15 +825,33 @@ func search(ctx context.Context, query string, limit int) error {
 	}
 	defer db.Close()
 
-	issues, err := db.SearchIssues(ctx, query, limit)
+	lines, err := searchLines(ctx, db, query, limit)
 	if err != nil {
 		return err
+	}
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+	return nil
+}
+
+// searchLines runs the keyword search over issues and documents and
+// returns the merged list lines (an empty query lists recent records).
+func searchLines(ctx context.Context, db *index.DB, query string, limit int) ([]string, error) {
+	issues, err := db.SearchIssues(ctx, query, limit)
+	if err != nil {
+		return nil, err
 	}
 	docs, err := db.SearchDocuments(ctx, query, limit)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	return mergeByUpdated(issues, docs, limit), nil
+}
 
+// mergeByUpdated formats issues and documents as list lines ordered by
+// updated_at DESC, keeping at most limit lines.
+func mergeByUpdated(issues []backlog.Issue, docs []backlog.Document, limit int) []string {
 	type entry struct {
 		line string
 		ts   time.Time
@@ -694,10 +869,11 @@ func search(ctx context.Context, query string, limit int) error {
 	if len(entries) > limit {
 		entries = entries[:limit]
 	}
-	for _, e := range entries {
-		fmt.Println(e.line)
+	lines := make([]string, len(entries))
+	for i, e := range entries {
+		lines[i] = e.line
 	}
-	return nil
+	return lines
 }
 
 // runOpen builds a URL from cfg.SpaceDomain and opens it in the browser.
