@@ -2,7 +2,7 @@
 
 各 Issue は 1 PR で閉じられる粒度を狙う。依存順に並べている。番号は仮。
 
-> 2026-10-13: S1〜S9 を 1 つの作業ツリーで実装済み（レビュー反映後。差分は README.md §15）。S10 以降は未着手。
+> 2026-10-13: S1〜S9 を実装済み（レビュー反映後。差分は README.md §15）。S10 も実装済み（README.md §15.2）。Phase 2 は未着手。
 
 ## Phase 1（MVP）
 
@@ -51,7 +51,7 @@
 - 依存: S8。
 
 ### S10. test(eval): 架空データでの小さな評価セット
-- 内容: `scripts/demo-seed` の架空データに「言い換えクエリ → 期待キー」10〜20 件を追加し、`go test -tags eval`（Ollama があるときだけ）または手動 `make eval` で Recall@5 を出す。
+- 内容: 架空データを `scripts/demodata` に切り出し、`scripts/eval`（`make eval`）に「言い換えクエリ → 期待キー」22 件と Recall@1 / Recall@5 / MRR の計算を実装。`-min-recall5` で退行ゲート。計算ロジックは単体テスト、実行には embedding サーバが必要。
 - 目的: モデル・次元・chunk 設定の変更時に退行を検出する。
 - 依存: S7。
 
