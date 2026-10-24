@@ -20,6 +20,17 @@ jobs:
         with:
           go-version-file: 'go.mod'
 
+      # Push the cask to hidetzu/homebrew-tap as the owner's GitHub App, installed on that repository only.
+      # Each run mints a short-lived token (nothing to rotate). The same App serves hidetzu/tenken and the other repos that push to the tap.
+      - uses: actions/create-github-app-token@v3
+        id: tap
+        with:
+          client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          owner: hidetzu
+          repositories: homebrew-tap
+          permission-contents: write
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -27,4 +38,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.tap.outputs.token }}
